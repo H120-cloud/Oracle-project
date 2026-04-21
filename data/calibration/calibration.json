@@ -1,0 +1,38 @@
+{
+  "buckets": [
+    {
+      "raw_range_low": 0,
+      "raw_range_high": 30,
+      "trade_count": 3,
+      "actual_win_rate": 33.3,
+      "avg_pnl": -1.77,
+      "calibrated_confidence": 33.3
+    },
+    {
+      "raw_range_low": 30,
+      "raw_range_high": 45,
+      "trade_count": 109,
+      "actual_win_rate": 50.5,
+      "avg_pnl": 0.91,
+      "calibrated_confidence": 50.5
+    },
+    {
+      "raw_range_low": 45,
+      "raw_range_high": 55,
+      "trade_count": 13,
+      "actual_win_rate": 84.6,
+      "avg_pnl": 6.2,
+      "calibrated_confidence": 84.6
+    }
+  ],
+  "grade_adjustments": {
+    "A": 28.2,
+    "B": 9.4,
+    "C": -6.0,
+    "D": -19.0
+  },
+  "htf_adjustments": {},
+  "total_trades_used": 125,
+  "last_calibrated": "2026-04-19T04:13:13.847895",
+  "is_calibrated": true
+}

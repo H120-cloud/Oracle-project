@@ -22,7 +22,7 @@ _provider = get_market_data_provider()
 def get_volume_profile(ticker: str):
     """Compute volume profile for a ticker."""
     try:
-        bars = _provider.get_ohlcv(ticker.upper(), period="1d", interval="1m")
+        bars = _provider.get_ohlcv(ticker.upper(), period="5d", interval="5m")
         if len(bars) < 10:
             return {"error": "Not enough data", "bars_available": len(bars)}
         engine = VolumeProfileEngine()
@@ -106,7 +106,6 @@ def get_complete_analysis(ticker: str):
         current_price = quote.get("price", 0)
 
         # Fetch bars ONCE with prepost=True, reuse everywhere
-        bars_1m = _provider.get_ohlcv(ticker, period="1d", interval="1m", prepost=True)
         bars_5m = _provider.get_ohlcv(ticker, period="5d", interval="5m")
 
         result = {
@@ -116,11 +115,11 @@ def get_complete_analysis(ticker: str):
             "quote": quote,
         }
 
-        # Volume Profile (uses 1m bars we already fetched)
+        # Volume Profile (uses 5m bars)
         try:
-            if len(bars_1m) >= 10:
+            if len(bars_5m) >= 10:
                 vp_engine = VolumeProfileEngine()
-                vp = vp_engine.compute(bars_1m)
+                vp = vp_engine.compute(bars_5m)
                 if vp:
                     result["volume_profile"] = vp.model_dump()
         except Exception:
@@ -136,11 +135,11 @@ def get_complete_analysis(ticker: str):
         except Exception:
             pass
 
-        # Stage (reuses 1m bars)
+        # Stage (reuses 5m bars)
         try:
-            if len(bars_1m) >= 30:
+            if len(bars_5m) >= 15:
                 stage_detector = StageDetector()
-                stage = stage_detector.detect(ticker, bars_1m)
+                stage = stage_detector.detect(ticker, bars_5m)
                 if stage:
                     result["stage"] = stage.model_dump()
         except Exception:
@@ -179,20 +178,20 @@ def get_bearish_analysis(ticker: str):
     
     try:
         # Get OHLCV data for analysis
-        bars_1m = _provider.get_ohlcv(ticker, period="1d", interval="1m")
+        bars_5m = _provider.get_ohlcv(ticker, period="5d", interval="5m")
         
         # Get volume profile for support level analysis
         volume_profile = None
         try:
-            if len(bars_1m) >= 10:
+            if len(bars_5m) >= 10:
                 vp_engine = VolumeProfileEngine()
-                volume_profile = vp_engine.compute(bars_1m)
+                volume_profile = vp_engine.compute(bars_5m)
         except Exception:
             pass
         
         # Run bearish detection
         detector = BearishDetector()
-        result = detector.detect(ticker, bars_1m, volume_profile)
+        result = detector.detect(ticker, bars_5m, volume_profile)
         
         if result:
             return result.model_dump()

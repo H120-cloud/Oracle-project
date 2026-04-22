@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { RefreshCw, TrendingUp, Target, CheckCircle, AlertTriangle, BarChart3, Play } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, ComposedChart, ReferenceLine } from 'recharts'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API = ''
 
 function MetricCard({ label, value, color = 'text-white' }) {
   return (

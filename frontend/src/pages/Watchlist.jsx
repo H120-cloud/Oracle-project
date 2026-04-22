@@ -985,8 +985,8 @@ export default function WatchlistPage() {
 
   // WebSocket for real-time price updates
   useEffect(() => {
-    const API_HOST = window.location.hostname + ':8000'
-    const wsUrl = `ws://${API_HOST}/ws/watchlist`
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${wsProto}//${window.location.host}/ws/watchlist`
     let ws = null
     let reconnectTimer = null
     let retryCount = 0

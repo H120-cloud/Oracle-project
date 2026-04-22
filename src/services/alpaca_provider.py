@@ -417,3 +417,49 @@ class AlpacaProvider(IMarketDataProvider):
         except Exception as e:
             logger.error("compute_bounce_features [%s] Alpaca failed: %s", ticker, e)
             return None, 0.0
+
+    def get_live_quote(self, ticker: str) -> dict:
+        """Fast live quote from Alpaca snapshot."""
+        try:
+            from alpaca.data.requests import StockSnapshotRequest
+
+            request = StockSnapshotRequest(symbol_or_symbols=ticker)
+            snapshots = self.data_client.get_stock_snapshot(request)
+            snap = snapshots.get(ticker)
+
+            if not snap:
+                return {"price": 0, "error": "No snapshot available"}
+
+            # Latest trade price
+            current_price = snap.latest_trade.price if snap.latest_trade else 0
+
+            # Daily bar for day high/low/volume
+            daily_bar = snap.daily_bar
+            day_high = daily_bar.high if daily_bar else 0
+            day_low = daily_bar.low if daily_bar else 0
+            volume = daily_bar.volume if daily_bar else 0
+            open_price = daily_bar.open if daily_bar else 0
+
+            # Previous close
+            prev_bar = snap.previous_daily_bar
+            prev_close = prev_bar.close if prev_bar else current_price
+
+            change = current_price - prev_close if prev_close > 0 else 0
+            change_pct = (change / prev_close * 100) if prev_close > 0 else 0
+
+            return {
+                "price": round(current_price, 2),
+                "previous_close": round(prev_close, 2),
+                "open": round(open_price, 2),
+                "change": round(change, 2),
+                "change_pct": round(change_pct, 2),
+                "day_high": round(day_high, 2),
+                "day_low": round(day_low, 2),
+                "volume": volume,
+                "market_cap": None,
+                "premarket": {"high": 0, "low": 0, "volume": 0, "gap_pct": 0},
+                "afterhours": {"high": 0, "low": 0, "volume": 0},
+            }
+        except Exception as e:
+            logger.error("get_live_quote [%s] Alpaca failed: %s", ticker, e)
+            return {"price": 0, "error": str(e)}

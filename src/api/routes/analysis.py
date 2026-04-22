@@ -54,8 +54,8 @@ def get_regime(ticker: str):
 def get_stage(ticker: str):
     """Detect stage of move for a ticker."""
     try:
-        bars = _provider.get_ohlcv(ticker.upper(), period="1d", interval="1m")
-        if len(bars) < 30:
+        bars = _provider.get_ohlcv(ticker.upper(), period="1d", interval="5m")
+        if len(bars) < 15:
             return {"error": "Not enough data", "bars_available": len(bars)}
         detector = StageDetector()
         result = detector.detect(ticker.upper(), bars)
@@ -70,27 +70,16 @@ def get_stage(ticker: str):
 def get_segment(ticker: str):
     """Classify the stock type/segment."""
     try:
-        # Fetch basic info to populate ScannedStock
-        import yfinance as yf
-
-        tkr = yf.Ticker(ticker.upper())
-        try:
-            info = tkr.fast_info
-            hist = tkr.history(period="1d", interval="1m")
-            price = float(hist["Close"].iloc[-1]) if not hist.empty else 0
-            volume = float(hist["Volume"].sum()) if not hist.empty else 0
-            avg_vol = getattr(info, "three_month_average_volume", None)
-            rvol = volume / avg_vol if avg_vol and avg_vol > 0 else None
-        except Exception:
-            price, volume, rvol = 0, 0, None
-
+        # Fetch basic info using provider
+        quote = _provider.get_live_quote(ticker.upper())
+        
         stock = ScannedStock(
             ticker=ticker.upper(),
-            price=price,
-            volume=volume,
-            rvol=rvol,
-            market_cap=getattr(info, "market_cap", None) if info else None,
-            float_shares=getattr(info, "shares", None) if info else None,
+            price=quote.get("price", 0),
+            volume=quote.get("volume", 0),
+            rvol=None,
+            market_cap=quote.get("market_cap"),
+            float_shares=None,
             scan_type="segment_check",
         )
         segmenter = StockSegmenter()

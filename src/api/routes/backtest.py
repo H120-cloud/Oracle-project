@@ -45,8 +45,8 @@ def get_adjustments(db: Session = Depends(get_db)):
 def get_order_flow(ticker: str):
     """Get order flow analysis for a ticker."""
     try:
-        bars = _provider.get_ohlcv(ticker.upper(), period="1d", interval="1m")
-        if len(bars) < 20:
+        bars = _provider.get_ohlcv(ticker.upper(), period="1d", interval="5m")
+        if len(bars) < 10:
             return {"error": "Not enough data", "bars_available": len(bars)}
         analyzer = OrderFlowAnalyzer()
         result = analyzer.analyze(bars)

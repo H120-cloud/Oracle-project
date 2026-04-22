@@ -1,0 +1,39 @@
+# Dependencies (installed fresh in Docker)
+node_modules
+frontend/node_modules
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+
+# Environment files (set in Railway dashboard)
+.env
+.env.local
+.env.railway
+
+# Data files (use Railway volumes)
+data/
+*.db
+backend.log
+
+# IDE
+.vscode
+.idea
+
+# Docker
+docker-compose.yml
+
+# Docs
+docs/
+*.md
+!README.md
+
+# Old project copy
+Oracle-project-original/

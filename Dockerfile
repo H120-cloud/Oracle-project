@@ -5,7 +5,7 @@ WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install --frozen-lockfile 2>/dev/null || npm install
 COPY frontend/ .
-RUN npm run build
+RUN npx vite build
 
 # ── Stage 2: Python backend + built frontend ────────────────────────────────
 FROM python:3.11-slim

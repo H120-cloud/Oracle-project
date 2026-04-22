@@ -58,18 +58,8 @@ def _require_alpaca():
 
 
 # ---------------------------------------------------------------------------
-# Timeframe mapping
+# Period mapping (date ranges) — safe to define at module level
 # ---------------------------------------------------------------------------
-_TF_MAP = {
-    "1m":  ("Minute", 1),
-    "5m":  ("Minute", 5),
-    "15m": ("Minute", 15),
-    "30m": ("Minute", 30),
-    "1h":  ("Hour", 1),
-    "1d":  ("Day", 1),
-    "1w":  ("Week", 1),
-}
-
 _PERIOD_MAP = {
     "1d":  timedelta(days=1),
     "5d":  timedelta(days=5),
@@ -79,6 +69,9 @@ _PERIOD_MAP = {
     "1y":  timedelta(days=365),
     "2y":  timedelta(days=730),
 }
+
+# Timeframe mapping — will be initialized inside class to avoid import issues
+_TF_MAP: dict = {}
 
 
 class AlpacaProvider(IMarketDataProvider):
@@ -129,6 +122,18 @@ class AlpacaProvider(IMarketDataProvider):
             paper, len(self.universe),
         )
 
+        # Initialize timeframe mapping now that imports are verified
+        global _TF_MAP
+        _TF_MAP = {
+            "1m":  (TimeFrameUnit.Minute, 1),
+            "5m":  (TimeFrameUnit.Minute, 5),
+            "15m": (TimeFrameUnit.Minute, 15),
+            "30m": (TimeFrameUnit.Minute, 30),
+            "1h":  (TimeFrameUnit.Hour, 1),
+            "1d":  (TimeFrameUnit.Day, 1),
+            "1w":  (TimeFrameUnit.Week, 1),
+        }
+
     # ------------------------------------------------------------------
     # IMarketDataProvider implementation
     # ------------------------------------------------------------------
@@ -177,8 +182,7 @@ class AlpacaProvider(IMarketDataProvider):
 
         # Resolve timeframe
         tf_key = interval if interval in _TF_MAP else "1m"
-        unit_str, amount = _TF_MAP[tf_key]
-        unit = TimeFrameUnit(unit_str)
+        unit, amount = _TF_MAP[tf_key]
         timeframe = TimeFrame(amount, unit)
 
         # Resolve date range

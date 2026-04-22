@@ -334,8 +334,8 @@ class BacktestValidator:
 
     def validate(self, tickers: List[str], start: str = "2024-01-01",
                  end: str = "2024-12-31", interval: str = "5m") -> ValidationResult:
-        from src.services.market_data import YFinanceProvider
-        prov = YFinanceProvider()
+        from src.services.market_data import get_market_data_provider
+        prov = get_market_data_provider()
         self._adapt_for_interval(interval)
         t0 = time.time()
         all_trades, all_rej, total = [], [], 0

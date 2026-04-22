@@ -34,7 +34,7 @@ from src.models.schemas import (
 )
 from src.core.decision_engine import DecisionEngine
 from src.core.market_trend_regime_detector import MarketTrendRegimeDetector, RegimeFilterResult
-from src.services.market_data import YFinanceProvider
+from src.services.market_data import get_market_data_provider
 
 logger = logging.getLogger(__name__)
 
@@ -188,8 +188,8 @@ class RegimeAwareBacktester:
     - Compare performance across different market regimes
     """
     
-    def __init__(self, market_data: Optional[YFinanceProvider] = None):
-        self.market_data = market_data or YFinanceProvider()
+    def __init__(self, market_data: Optional[IMarketDataProvider] = None):
+        self.market_data = market_data or get_market_data_provider()
         self.regime_detector = MarketTrendRegimeDetector()
         
         # Initialize DecisionEngine

@@ -19,7 +19,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
-from src.services.market_data import YFinanceProvider
+from src.services.market_data import get_market_data_provider
 from src.core.intelligence_engine import IntelligenceEngine
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/intelligence", tags=["intelligence"])
 
 # Shared engine instance
-_provider = YFinanceProvider()
+_provider = get_market_data_provider()
 _engine = IntelligenceEngine(provider=_provider)
 
 

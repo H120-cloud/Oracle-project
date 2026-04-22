@@ -41,7 +41,7 @@ from src.models.schemas import (
 from src.core.decision_engine import DecisionEngine
 from src.core.market_trend_regime_detector import MarketTrendRegimeDetector
 from src.core.ict_detector import ICTDetector
-from src.services.market_data import YFinanceProvider
+from src.services.market_data import get_market_data_provider
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ class LiveTradingSimulator:
         self.risk_per_trade_pct = risk_per_trade_pct
         
         # Core components
-        self.market_data = YFinanceProvider()
+        self.market_data = get_market_data_provider()
         self.ict_detector = ICTDetector()
         self.regime_detector = MarketTrendRegimeDetector()
         self.decision_engine = DecisionEngine(

@@ -16,7 +16,7 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 
 from src.db.repositories import WatchlistRepository
-from src.services.market_data import YFinanceProvider
+from src.services.market_data import get_market_data_provider
 from src.services.htf_alert_service import get_htf_alert_service, HTFAlert
 from src.core.higher_timeframe_bias import HigherTimeframeBiasDetector
 from src.models.database import Watchlist
@@ -30,7 +30,7 @@ class WatchlistService:
     def __init__(self, db: Session):
         self.db = db
         self.repo = WatchlistRepository(db)
-        self.provider = YFinanceProvider()
+        self.provider = get_market_data_provider()
         self.htf_alert_service = get_htf_alert_service()
         self.htf_detector = HigherTimeframeBiasDetector()
 

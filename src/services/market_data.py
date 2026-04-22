@@ -485,3 +485,243 @@ class YFinanceProvider(IMarketDataProvider):
         except Exception as exc:
             logger.error("compute_bounce_features [%s] failed: %s", ticker, exc)
             return None, 0.0
+
+
+class FinnhubProvider(IMarketDataProvider):
+    """Market data provider backed by Finnhub API."""
+
+    def __init__(self, api_key: str | None = None, universe: list[str] | None = None):
+        import os
+        import finnhub
+        self.api_key = api_key or os.getenv("FINNHUB_API_KEY", "")
+        self.client = finnhub.Client(api_key=self.api_key)
+        self.universe = universe or DEFAULT_SCAN_UNIVERSE
+
+    def get_scan_universe(self) -> pd.DataFrame:
+        """Fetch latest quote data for the scan universe."""
+        rows = []
+        for symbol in self.universe:
+            try:
+                quote = self.client.quote(symbol)
+                # Finnhub returns: c (current), d (change), dp (change %), h (high), l (low), o (open), pc (prev close), t (timestamp)
+                price = quote.get("c", 0)
+                if price == 0:
+                    continue
+                prev_close = quote.get("pc", 0)
+                change_pct = quote.get("dp", 0)
+                volume = quote.get("v", 0)  # Note: finnhub basic quote doesn't have volume, need profile2
+                
+                # Get basic profile for market cap
+                profile = self.client.company_profile2(symbol=symbol)
+                market_cap = profile.get("marketCapitalization", 0) * 1_000_000 if profile else 0
+                
+                rows.append({
+                    "ticker": symbol,
+                    "price": price,
+                    "volume": volume,
+                    "rvol": None,
+                    "change_percent": round(change_pct, 2),
+                    "market_cap": market_cap,
+                    "float_shares": None,
+                })
+            except Exception as exc:
+                logger.warning("Failed to fetch %s from Finnhub: %s", symbol, exc)
+
+        return pd.DataFrame(rows)
+
+    def get_ohlcv(
+        self, ticker: str, period: str = None, interval: str = "1m",
+        start: str = None, end: str = None, prepost: bool = False,
+    ) -> list[OHLCVBar]:
+        """Fetch OHLCV data from Finnhub."""
+        from datetime import datetime, timedelta
+        import time
+        
+        cache = get_cache()
+        cache_key = f"ohlcv:{ticker}:{interval}:{start}:{end}:{period}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Finnhub resolution mapping: 1, 5, 15, 30, 60, D, W, M
+        resolution_map = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60", "1d": "D", "1wk": "W", "1mo": "M"}
+        resolution = resolution_map.get(interval, "D")
+        
+        # Calculate timestamps
+        now = int(time.time())
+        if start and end:
+            from datetime import datetime
+            start_ts = int(datetime.strptime(start, "%Y-%m-%d").timestamp())
+            end_ts = int(datetime.strptime(end, "%Y-%m-%d").timestamp())
+        elif period:
+            period_days = {"1d": 1, "5d": 5, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "2y": 730}
+            days = period_days.get(period, 30)
+            start_ts = now - (days * 24 * 60 * 60)
+            end_ts = now
+        else:
+            start_ts = now - (30 * 24 * 60 * 60)
+            end_ts = now
+
+        try:
+            data = self.client.stock_candles(ticker, resolution, start_ts, end_ts)
+            # Finnhub returns: s (status), t (timestamps), o (open), h (high), l (low), c (close), v (volume)
+            if data.get("s") != "ok":
+                logger.warning("Finnhub candles error for %s: %s", ticker, data)
+                return []
+            
+            bars = []
+            for i in range(len(data["t"])):
+                bars.append(OHLCVBar(
+                    timestamp=datetime.fromtimestamp(data["t"][i]),
+                    open=float(data["o"][i]),
+                    high=float(data["h"][i]),
+                    low=float(data["l"][i]),
+                    close=float(data["c"][i]),
+                    volume=float(data["v"][i]),
+                ))
+            
+            ttl = OHLCV_DAILY_TTL if interval in ("1d", "1wk") else OHLCV_INTRADAY_TTL
+            cache.set(cache_key, bars, ttl)
+            return bars
+        except Exception as exc:
+            logger.error("get_ohlcv [%s] failed: %s", ticker, exc)
+            return []
+
+    def get_live_quote(self, ticker: str) -> dict:
+        """Fast live quote from Finnhub."""
+        cache = get_cache()
+        cache_key = f"quote:{ticker}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            quote = self.client.quote(ticker)
+            # c: current, d: change, dp: change%, h: high, l: low, o: open, pc: prev close
+            current = quote.get("c", 0)
+            prev = quote.get("pc", 0)
+            change = current - prev if prev > 0 else 0
+            change_pct = (change / prev * 100) if prev > 0 else 0
+            
+            result = {
+                "price": round(current, 2),
+                "previous_close": round(prev, 2),
+                "open": round(quote.get("o", 0), 2),
+                "change": round(change, 2),
+                "change_pct": round(change_pct, 2),
+                "day_high": round(quote.get("h", 0), 2),
+                "day_low": round(quote.get("l", 0), 2),
+                "volume": 0,  # Finnhub quote doesn't include volume
+                "market_cap": 0,
+                "premarket": {"high": 0, "low": 0, "volume": 0, "gap_pct": 0},
+                "afterhours": {"high": 0, "low": 0, "volume": 0},
+            }
+            cache.set(cache_key, result, FAST_INFO_TTL)
+            return result
+        except Exception as exc:
+            logger.warning("get_live_quote [%s] failed: %s", ticker, exc)
+            return {"price": 0, "previous_close": 0, "change": 0, "change_pct": 0}
+
+    def compute_dip_features(self, ticker: str) -> Optional[DipFeatures]:
+        """Compute DipFeatures from intraday data."""
+        try:
+            bars = self.get_ohlcv(ticker, period="1d", interval="5m")
+            if len(bars) < 20:
+                return None
+            
+            import pandas as pd
+            df = pd.DataFrame([
+                {"Open": b.open, "High": b.high, "Low": b.low, "Close": b.close, "Volume": b.volume}
+                for b in bars
+            ])
+            
+            close = df["Close"]
+            high = df["High"]
+            low = df["Low"]
+            volume = df["Volume"]
+            
+            # VWAP
+            typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
+            cum_tp_vol = (typical_price * volume).cumsum()
+            cum_vol = volume.cumsum()
+            vwap = cum_tp_vol / cum_vol
+            vwap_dist = ((close.iloc[-1] - vwap.iloc[-1]) / vwap.iloc[-1]) * 100
+            
+            # EMAs
+            ema9 = close.ewm(span=9, adjust=False).mean()
+            ema20 = close.ewm(span=20, adjust=False).mean()
+            ema9_dist = ((close.iloc[-1] - ema9.iloc[-1]) / ema9.iloc[-1]) * 100
+            ema20_dist = ((close.iloc[-1] - ema20.iloc[-1]) / ema20.iloc[-1]) * 100
+            
+            # Drop from intraday high
+            intraday_high = high.max()
+            drop_from_high = ((intraday_high - close.iloc[-1]) / intraday_high) * 100
+            
+            return DipFeatures(
+                vwap_distance_pct=round(float(vwap_dist), 2),
+                ema9_distance_pct=round(float(ema9_dist), 2),
+                ema20_distance_pct=round(float(ema20_dist), 2),
+                drop_from_high_pct=round(float(drop_from_high), 2),
+                consecutive_red_candles=0,
+                red_candle_volume_ratio=1.0,
+                lower_highs_count=0,
+                momentum_decay=0.0,
+                price_velocity=0.0,
+                price_acceleration=0.0,
+                momentum_state="neutral",
+                structure_intact=True,
+                is_falling_knife=False,
+            )
+        except Exception as exc:
+            logger.error("compute_dip_features [%s] failed: %s", ticker, exc)
+            return None
+
+    def compute_bounce_features(
+        self, ticker: str
+    ) -> tuple[Optional[BounceFeatures], float]:
+        """Compute BounceFeatures and current price."""
+        try:
+            bars = self.get_ohlcv(ticker, period="1d", interval="5m")
+            if len(bars) < 20:
+                return None, 0.0
+            
+            import pandas as pd
+            df = pd.DataFrame([
+                {"Open": b.open, "High": b.high, "Low": b.low, "Close": b.close, "Volume": b.volume}
+                for b in bars
+            ])
+            
+            close = df["Close"]
+            low = df["Low"]
+            support = float(low.rolling(20).min().iloc[-1])
+            current_price = float(close.iloc[-1])
+            support_dist = ((current_price - support) / support) * 100
+            
+            return BounceFeatures(
+                support_distance_pct=round(float(support_dist), 2),
+                selling_pressure_change=0.0,
+                buying_pressure_ratio=1.0,
+                higher_low_formed=False,
+                key_level_reclaimed=False,
+                rsi=None,
+                macd_histogram_slope=None,
+                price_velocity=0.0,
+                price_acceleration=0.0,
+                momentum_state="neutral",
+            ), current_price
+        except Exception as exc:
+            logger.error("compute_bounce_features [%s] failed: %s", ticker, exc)
+            return None, 0.0
+
+
+def get_market_data_provider() -> IMarketDataProvider:
+    """Factory function to get the configured market data provider."""
+    import os
+    provider = os.getenv("MARKET_DATA_PROVIDER", "yfinance").lower()
+    if provider == "finnhub":
+        return FinnhubProvider()
+    elif provider == "alpaca":
+        from src.services.alpaca_provider import AlpacaProvider
+        return AlpacaProvider()
+    else:
+        return YFinanceProvider()

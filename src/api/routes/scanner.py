@@ -14,7 +14,7 @@ from src.core.scanner import MarketScanner
 from src.core.professional_scanner import ProfessionalScanner, to_scanned_stock
 from src.core.discovery_engine import DiscoveryEngine
 from src.models.schemas import ScanFilter, ScanResponse
-from src.services.market_data import YFinanceProvider
+from src.services.market_data import get_market_data_provider
 
 router = APIRouter(prefix="/scanner", tags=["scanner"])
 
@@ -27,7 +27,7 @@ def scan_by_volume(
     max_results: int = Query(20),
 ):
     """Scan top stocks by raw volume."""
-    provider = YFinanceProvider()
+    provider = get_market_data_provider()
     df = provider.get_scan_universe()
     scanner = MarketScanner(
         ScanFilter(
@@ -49,7 +49,7 @@ def scan_by_rvol(
     max_results: int = Query(20),
 ):
     """Scan top stocks by relative volume."""
-    provider = YFinanceProvider()
+    provider = get_market_data_provider()
     df = provider.get_scan_universe()
     scanner = MarketScanner(
         ScanFilter(
@@ -71,7 +71,7 @@ def scan_by_gainers(
     max_results: int = Query(20),
 ):
     """Scan top % gainers."""
-    provider = YFinanceProvider()
+    provider = get_market_data_provider()
     df = provider.get_scan_universe()
     scanner = MarketScanner(
         ScanFilter(

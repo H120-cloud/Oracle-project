@@ -53,7 +53,7 @@ from src.models.schemas import (
     ExitWarningLevel,
     OHLCVBar,
 )
-from src.services.market_data import YFinanceProvider, DEFAULT_SCAN_UNIVERSE, IMarketDataProvider
+from src.services.market_data import get_market_data_provider, DEFAULT_SCAN_UNIVERSE, IMarketDataProvider
 from src.services.logging_service import LoggingService
 
 logger = logging.getLogger(__name__)
@@ -68,22 +68,12 @@ class SignalService:
         market_data: Optional[IMarketDataProvider] = None,
     ):
         settings = get_settings()
-        # V10: Auto-select market data provider (Alpaca if keys available, else yfinance)
+        # V10: Auto-select market data provider based on settings
         if market_data:
             self.market_data = market_data
-        elif settings.alpaca_api_key and settings.market_data_provider == "alpaca":
-            try:
-                from src.services.alpaca_provider import AlpacaProvider
-                self.market_data = AlpacaProvider(
-                    api_key=settings.alpaca_api_key,
-                    secret_key=settings.alpaca_secret_key,
-                )
-                logger.info("Using AlpacaProvider for market data")
-            except Exception as e:
-                logger.warning("Alpaca init failed (%s), falling back to yfinance", e)
-                self.market_data = YFinanceProvider()
         else:
-            self.market_data = YFinanceProvider()
+            self.market_data = get_market_data_provider()
+            logger.info(f"Using {self.market_data.__class__.__name__} for market data")
         self.scanner = MarketScanner(
             ScanFilter(
                 min_price=settings.scanner_min_price,

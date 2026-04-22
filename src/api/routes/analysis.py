@@ -5,7 +5,7 @@ V3 Analysis API routes — volume profile, regime, segmentation, stage.
 from datetime import datetime
 from fastapi import APIRouter, Query
 
-from src.services.market_data import YFinanceProvider
+from src.services.market_data import get_market_data_provider
 from src.core.volume_profile import VolumeProfileEngine
 from src.core.regime_detector import RegimeDetector
 from src.core.stock_segmenter import StockSegmenter
@@ -15,7 +15,7 @@ from src.models.schemas import ScannedStock
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
-_provider = YFinanceProvider()
+_provider = get_market_data_provider()
 
 
 @router.get("/volume-profile/{ticker}")

@@ -9,12 +9,12 @@ from src.db.session import get_db
 from src.core.backtester import Backtester
 from src.core.self_learner import SelfLearner
 from src.core.order_flow import OrderFlowAnalyzer
-from src.services.market_data import YFinanceProvider
+from src.services.market_data import get_market_data_provider
 from src.models.schemas import BacktestConfig
 
 router = APIRouter(tags=["backtest"])
 
-_provider = YFinanceProvider()
+_provider = get_market_data_provider()
 
 
 @router.post("/backtest")

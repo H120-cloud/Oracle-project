@@ -5,7 +5,7 @@ from typing import List, Optional, Callable
 from enum import Enum
 from src.core.higher_timeframe_bias import HigherTimeframeBiasDetector, HTFBiasResult
 from src.models.schemas import ScannedStock
-from src.services.market_data import YFinanceProvider, IMarketDataProvider
+from src.services.market_data import get_market_data_provider, IMarketDataProvider
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class HTFAwareScanner:
     
     def __init__(self, base_scanner: Callable, market_data: Optional[IMarketDataProvider] = None):
         self.base_scanner = base_scanner
-        self.market_data = market_data or YFinanceProvider()
+        self.market_data = market_data or get_market_data_provider()
         self.htf_detector = HigherTimeframeBiasDetector()
     
     def scan(self, htf_filter_mode: HTFFilterMode = HTFFilterMode.PREFER_BULLISH,

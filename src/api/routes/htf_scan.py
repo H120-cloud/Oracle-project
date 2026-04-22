@@ -13,7 +13,7 @@ def htf_aware_scan(
     """V9: Run HTF-aware professional scan."""
     from src.core.htf_aware_scanner import HTFAwareScanner, HTFFilterMode
     from src.core.professional_scanner import ProfessionalScanner
-    from src.services.market_data import YFinanceProvider
+    from src.services.market_data import get_market_data_provider
     
     mode_map = {
         "prefer_bullish": HTFFilterMode.PREFER_BULLISH,
@@ -25,7 +25,7 @@ def htf_aware_scan(
     
     scanner = HTFAwareScanner(
         lambda: ProfessionalScanner(max_results=30).scan_universe(universe),
-        YFinanceProvider()
+        get_market_data_provider()
     )
     
     result = scanner.scan(

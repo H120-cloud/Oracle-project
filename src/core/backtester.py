@@ -23,7 +23,7 @@ from src.models.schemas import (
     BacktestTrade,
     BacktestResult,
 )
-from src.services.market_data import YFinanceProvider, IMarketDataProvider
+from src.services.market_data import get_market_data_provider, IMarketDataProvider
 from src.core.dip_detector import DipDetector
 from src.core.bounce_detector import BounceDetector
 from src.core.stage_detector import StageDetector
@@ -45,7 +45,7 @@ class Backtester:
         stop_pct: float = DEFAULT_STOP_PCT,
         target_pct: float = DEFAULT_TARGET_PCT,
     ):
-        self.market_data = market_data or YFinanceProvider()
+        self.market_data = market_data or get_market_data_provider()
         self.dip_detector = DipDetector()
         self.bounce_detector = BounceDetector()
         self.stage_detector = StageDetector()

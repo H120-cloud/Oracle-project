@@ -25,7 +25,7 @@ import logging
 import math
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 try:
     from zoneinfo import ZoneInfo
@@ -500,3 +500,296 @@ def _null_rates(records: Sequence[RocketRecord], columns: Sequence[str]) -> Dict
         null_count = sum(1 for r in records if getattr(r, col, None) is None)
         result[col] = round(null_count / n, 6)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Label functions
+# ---------------------------------------------------------------------------
+
+
+def compute_peak_metrics(
+    intraday_bars: Optional[List[Any]],
+    daily_bars: Optional[List[Any]],
+    alert_price: float,
+    alert_time: datetime,
+    stored_five_day_high_pct: Optional[float] = None,
+) -> PeakMetrics:
+    """Find peak move within ~5 trading days of alert_time.
+
+    Scans bars (intraday preferred, daily fallback) for the highest high
+    within the observation window. Falls back to stored_five_day_high_pct
+    when no bars are available.
+    """
+    if alert_price <= 0:
+        return PeakMetrics()
+
+    alert_time = _aware(alert_time)
+    window_end = alert_time + timedelta(days=8)  # 5 trading days + weekend buffer
+
+    bars = intraday_bars or daily_bars or []
+    peak_high: Optional[float] = None
+    peak_ts: Optional[datetime] = None
+
+    for bar in bars:
+        ts = _bar_ts(bar)
+        if ts is None or ts < alert_time or ts > window_end:
+            continue
+        high = _bar_high(bar)
+        if high is None:
+            continue
+        if peak_high is None or high > peak_high:
+            peak_high = high
+            peak_ts = ts
+
+    if peak_high is None:
+        if stored_five_day_high_pct is not None:
+            return PeakMetrics(peak_move_pct=round(stored_five_day_high_pct, 4))
+        return PeakMetrics()
+
+    peak_move_pct = round((peak_high / alert_price - 1.0) * 100.0, 4)
+    calendar_mins = (peak_ts - alert_time).total_seconds() / 60.0
+    trading_mins  = _trading_minutes_between(alert_time, peak_ts)
+
+    return PeakMetrics(
+        peak_move_pct=peak_move_pct,
+        peak_timestamp=peak_ts,
+        calendar_time_to_peak_minutes=round(calendar_mins, 2),
+        trading_time_to_peak_minutes=trading_mins,
+    )
+
+
+def compute_runner_tier(
+    peak_move_pct: Optional[float],
+    time_to_peak_minutes: Optional[float],
+    use_trading_time: bool = True,
+) -> Optional[str]:
+    """Assign runner tier based on peak_move_pct and timing.
+
+    Evaluated sequentially from highest milestone down so a 400% mover
+    is classified as LEGENDARY_RUNNER, never compressed into MONSTER_RUNNER.
+
+    When time_to_peak_minutes is None:
+    - LEGENDARY and MONSTER can still be assigned (5-day tiers, bounded
+      by construction from the observation window)
+    - MAJOR_RUNNER and STANDARD_WIN require timing data (shorter windows
+      cannot be verified without it)
+    """
+    if peak_move_pct is None or peak_move_pct < 0:
+        return None
+
+    if time_to_peak_minutes is not None:
+        trading_days = time_to_peak_minutes / (60.0 * 6.5)
+        within_5 = trading_days <= 5.0
+        within_2 = trading_days <= 2.0
+        within_1 = trading_days <= 1.0
+    else:
+        within_5 = True   # bounded by 5-day observation window by construction
+        within_2 = False  # cannot verify 2-day window without timing
+        within_1 = False  # cannot verify 1-day window without timing
+
+    if peak_move_pct >= 300 and within_5:
+        return "LEGENDARY_RUNNER"
+    if peak_move_pct >= 100 and within_5:
+        return "MONSTER_RUNNER"
+    if peak_move_pct >= 30  and within_2:
+        return "MAJOR_RUNNER"
+    if peak_move_pct >= 10  and within_1:
+        return "STANDARD_WIN"
+    return None
+
+
+def compute_mfe_mae_profiles(
+    intraday_bars: Optional[List[Any]],
+    daily_bars: Optional[List[Any]],
+    alert_price: float,
+    alert_time: datetime,
+    stored_fields: Optional[Dict[str, Optional[float]]] = None,
+) -> MFEMAEProfiles:
+    """Compute MFE and MAE for five observation windows.
+
+    Priority:
+    1. intraday_bars — all 5 windows available
+    2. daily_bars — only 1d/2d/5d available; 15m/60m stay null
+    3. stored_fields — mfe_1d/2d/5d from pre-resolved data; all MAE null
+    """
+    if alert_price <= 0:
+        return MFEMAEProfiles()
+
+    alert_time = _aware(alert_time)
+    stored_fields = stored_fields or {}
+
+    _WINDOWS: List[Tuple[str, timedelta]] = [
+        ("15m", timedelta(minutes=15)),
+        ("60m", timedelta(minutes=60)),
+        ("1d",  timedelta(hours=24)),
+        ("2d",  timedelta(hours=48)),
+        ("5d",  timedelta(days=8)),
+    ]
+
+    result = MFEMAEProfiles()
+
+    if intraday_bars:
+        for key, delta in _WINDOWS:
+            end = alert_time + delta
+            highs: List[float] = []
+            lows: List[float] = []
+            for bar in intraday_bars:
+                ts = _bar_ts(bar)
+                if ts is None or ts < alert_time or ts > end:
+                    continue
+                h = _bar_high(bar)
+                l = _bar_low(bar)
+                if h is not None:
+                    highs.append(h)
+                if l is not None:
+                    lows.append(l)
+            if highs:
+                setattr(result, f"mfe_{key}", round((max(highs) / alert_price - 1) * 100, 4))
+            if lows:
+                setattr(result, f"mae_{key}", round((min(lows) / alert_price - 1) * 100, 4))
+        return result
+
+    if daily_bars:
+        # Sub-day windows are not available from daily bars — they stay null
+        for key, n_days in [("1d", 1), ("2d", 2), ("5d", 5)]:
+            alert_date = alert_time.date()
+            days_seen = 0
+            day_highs: List[float] = []
+            day_lows: List[float] = []
+            for bar in daily_bars:
+                ts = _bar_ts(bar)
+                if ts is None or ts.date() <= alert_date:
+                    continue
+                h = _bar_high(bar)
+                l = _bar_low(bar)
+                if h is not None:
+                    day_highs.append(h)
+                if l is not None:
+                    day_lows.append(l)
+                days_seen += 1
+                if days_seen >= n_days:
+                    break
+            if day_highs:
+                setattr(result, f"mfe_{key}", round((max(day_highs) / alert_price - 1) * 100, 4))
+            if day_lows:
+                setattr(result, f"mae_{key}", round((min(day_lows) / alert_price - 1) * 100, 4))
+        return result
+
+    # Stored-fields fallback — MFE only, MAE always null
+    mapping = {
+        "stored_return_next_day_high_pct": "mfe_1d",
+        "stored_return_two_day_high_pct":  "mfe_2d",
+        "stored_return_five_day_high_pct": "mfe_5d",
+    }
+    for stored_key, result_field in mapping.items():
+        v = stored_fields.get(stored_key)
+        if v is not None:
+            setattr(result, result_field, v)
+    return result
+
+
+def compute_drawdown_quality(
+    intraday_bars: Optional[List[Any]],
+    daily_bars: Optional[List[Any]],
+    alert_price: float,
+    tier: Optional[str],
+    drawdown_data_quality: str,
+) -> Optional[str]:
+    """Classify drawdown quality: CLEAN_RUNNER, DIRTY_RUNNER, or TRAP.
+
+    TRAP is checked over the full observation window and takes precedence.
+    CLEAN/DIRTY is only checked when the tier target is reached.
+    Returns None when tier is None or drawdown_data_quality is "missing".
+    """
+    if drawdown_data_quality == "missing" or tier is None or alert_price <= 0:
+        return None
+
+    _TIER_TARGETS = {
+        "STANDARD_WIN":     10.0,
+        "MAJOR_RUNNER":     30.0,
+        "MONSTER_RUNNER":  100.0,
+        "LEGENDARY_RUNNER": 300.0,
+    }
+    target_pct = _TIER_TARGETS.get(tier)
+    if target_pct is None:
+        return None
+
+    bars = intraday_bars if intraday_bars else (daily_bars if daily_bars else [])
+    if not bars:
+        return None
+
+    target_price     = alert_price * (1.0 + target_pct / 100.0)
+    trap_up_thresh   = alert_price * 1.20   # +20% activates TRAP watch
+    trap_down_thresh = alert_price * 0.80   # -20% from alert triggers Rule 1
+
+    # ── Pass 1: TRAP detection (full window) ─────────────────────────────
+    peak_seen = alert_price
+    activated = False  # saw >= +20% from alert
+
+    for bar in bars:
+        h = _bar_high(bar)
+        l = _bar_low(bar)
+        c = _bar_close(bar)
+
+        if h is not None:
+            peak_seen = max(peak_seen, h)
+            if h >= trap_up_thresh:
+                activated = True
+
+        if activated:
+            # Rule 1: low drops to ≤ -20% from alert
+            if l is not None and l <= trap_down_thresh:
+                return "TRAP"
+            # Rule 2: close loses ≥ 40% from peak
+            if c is not None and peak_seen > 0:
+                if (1.0 - c / peak_seen) * 100.0 >= 40.0:
+                    return "TRAP"
+
+    # ── Pass 2: CLEAN / DIRTY (path to target) ───────────────────────────
+    rolling_mae = 0.0  # min (low / alert_price - 1) * 100, tracks worst excursion
+
+    for bar in bars:
+        l = _bar_low(bar)
+        h = _bar_high(bar)
+
+        if l is not None:
+            mae = (l / alert_price - 1.0) * 100.0
+            if mae < rolling_mae:
+                rolling_mae = mae
+
+        if h is not None and h >= target_price:
+            return "DIRTY_RUNNER" if rolling_mae <= -15.0 else "CLEAN_RUNNER"
+
+    return None  # target never reached
+
+
+def _compute_data_quality_score(record: "RocketRecord") -> float:
+    """Score 0–100 reflecting how reliably this record can be labeled.
+
+    Weights sum to exactly 100:
+      intraday_bars available   = 30
+      peak_timestamp available  = 10
+      runner_tier assigned      = 10
+      drawdown_quality assigned = 10
+      each MFE+MAE window pair  =  8  (× 5 windows = 40)
+    """
+    score = 0.0
+    if record.intraday_bars:
+        score += 30.0
+    if record.peak_timestamp is not None:
+        score += 10.0
+    if record.runner_tier is not None:
+        score += 10.0
+    if record.drawdown_quality is not None:
+        score += 10.0
+    pairs = [
+        (record.mfe_15m, record.mae_15m),
+        (record.mfe_60m, record.mae_60m),
+        (record.mfe_1d,  record.mae_1d),
+        (record.mfe_2d,  record.mae_2d),
+        (record.mfe_5d,  record.mae_5d),
+    ]
+    for mfe, mae in pairs:
+        if mfe is not None and mae is not None:
+            score += 8.0
+    return min(100.0, score)

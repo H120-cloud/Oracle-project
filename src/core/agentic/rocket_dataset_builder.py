@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time as _time_module
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -1011,3 +1012,79 @@ class RocketDatasetBuilder:
                     rec.dedup_reason        = _DEDUP_REASON_PRIORITY
                     rec.rejection_reason    = _REJECTION_DUPLICATE
         return records
+
+    # ── Stage 2: Enrichment ───────────────────────────────────────────────────────
+
+    def _enrich(self, records: List[RocketRecord]) -> List[RocketRecord]:
+        """Fetch missing forward pricing for records that need it.
+
+        Uses a per-ticker cache so each ticker is fetched at most once per run.
+        Rate-limited to _FETCH_DELAY seconds between calls.
+        Failures are logged at DEBUG level and never raised.
+        """
+        try:
+            from src.services.market_data import get_market_data_provider
+            provider = get_market_data_provider()
+        except Exception as exc:
+            logger.warning("Enrichment: market data provider unavailable: %s", exc)
+            for rec in records:
+                if rec.rejection_reason:
+                    continue
+                if rec.intraday_bars is None and rec.daily_bars is None:
+                    rec.drawdown_data_quality = "missing"
+            return records
+
+        fetch_cache: Dict[str, Dict[str, Any]] = {}
+
+        for rec in records:
+            if rec.rejection_reason:
+                continue
+
+            # Records that already have bars (e.g. pre-enriched) — just set quality flag
+            if rec.intraday_bars is not None or rec.daily_bars is not None:
+                if rec.drawdown_data_quality is None:
+                    rec.drawdown_data_quality = (
+                        "intraday_exact" if rec.intraday_bars else "daily_proxy"
+                    )
+                continue
+
+            ticker = rec.ticker
+            if ticker not in fetch_cache:
+                intraday, daily = self._fetch_bars(provider, ticker)
+                fetch_cache[ticker] = {"intraday": intraday, "daily": daily}
+                _time_module.sleep(_FETCH_DELAY)
+
+            cached = fetch_cache[ticker]
+            rec.intraday_bars = cached["intraday"]
+            rec.daily_bars    = cached["daily"]
+
+            if rec.intraday_bars:
+                rec.drawdown_data_quality = "intraday_exact"
+            elif rec.daily_bars:
+                rec.drawdown_data_quality = "daily_proxy"
+            else:
+                rec.drawdown_data_quality = "missing"
+
+        fetched    = sum(1 for v in fetch_cache.values() if v["intraday"] or v["daily"])
+        unavailable = sum(1 for v in fetch_cache.values() if not v["intraday"] and not v["daily"])
+        logger.info("Enrichment: unique tickers fetched=%d unavailable=%d", fetched, unavailable)
+        return records
+
+    @staticmethod
+    def _fetch_bars(
+        provider: Any, ticker: str
+    ) -> Tuple[Optional[List[Any]], Optional[List[Any]]]:
+        """Fetch intraday (5m) and daily (1d) bars for ticker. Never raises."""
+        intraday: Optional[List[Any]] = None
+        daily:    Optional[List[Any]] = None
+        try:
+            result = provider.get_ohlcv(ticker, period="30d", interval="5m", prepost=True)
+            intraday = result or None
+        except Exception as exc:
+            logger.debug("Enrichment: intraday fetch failed %s: %s", ticker, exc)
+        try:
+            result = provider.get_ohlcv(ticker, period="30d", interval="1d", prepost=False)
+            daily = result or None
+        except Exception as exc:
+            logger.debug("Enrichment: daily fetch failed %s: %s", ticker, exc)
+        return intraday, daily

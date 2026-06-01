@@ -272,6 +272,12 @@ class RocketRecord(BaseModel):
     data_quality_score: Optional[float] = None
 
 
+# Fields excluded from export by Field(exclude=True) — derived from model metadata
+_INTERNAL_FIELDS: frozenset = frozenset(
+    name for name, f in RocketRecord.model_fields.items() if f.exclude
+)
+
+
 class BuildSummary(BaseModel):
     """Top-level statistics produced after a full dataset build run."""
 
@@ -505,22 +511,18 @@ def _null_rates(
     Returns a dict mapping column name → fraction of records where the value
     is None / NaN (0.0 to 1.0).  Returns 1.0 for all columns when empty.
     """
-    try:
-        import pandas as _pd_check
-        if isinstance(records, _pd_check.DataFrame):
-            n = len(records)
-            if n == 0:
-                return {col: 1.0 for col in columns}
-            result: Dict[str, float] = {}
-            for col in columns:
-                if col in records.columns:
-                    null_count = int(records[col].isna().sum())
-                else:
-                    null_count = n
-                result[col] = round(null_count / n, 6)
-            return result
-    except ImportError:
-        pass
+    if isinstance(records, pd.DataFrame):
+        n = len(records)
+        if n == 0:
+            return {col: 1.0 for col in columns}
+        result: Dict[str, float] = {}
+        for col in columns:
+            if col in records.columns:
+                null_count = int(records[col].isna().sum())
+            else:
+                null_count = n
+            result[col] = round(null_count / n, 6)
+        return result
     # Sequence[RocketRecord] path
     n = len(records)
     if n == 0:
@@ -894,7 +896,6 @@ def _write_report(
         by_source[s]["ing"] += 1
         if rec.rejection_reason:
             by_source[s]["rej"] += 1
-    exp_ids = {r.row_id for r in exportable}
     for rec in exportable:
         by_source.setdefault(rec.source_type, {"ing": 0, "exp": 0, "rej": 0})
         by_source[rec.source_type]["exp"] += 1
@@ -946,9 +947,12 @@ def _write_report(
         "| Tier | Count | % |",
         "|---|---|---|",
     ]
-    for tier in sorted(RUNNER_TIERS) + ["null"]:
+    for tier in sorted(RUNNER_TIERS):
         cnt = tier_counts.get(tier, 0)
         lines.append(f"| {tier} | {cnt} | {_pct(cnt, n_exp)} |")
+    # True null = exportable rows without any tier assigned
+    tier_null = n_exp - sum(tier_counts.values())
+    lines.append(f"| _(unlabeled)_ | {tier_null} | {_pct(tier_null, n_exp)} |")
 
     lines += [
         "",
@@ -960,9 +964,12 @@ def _write_report(
         "| Quality | Count | % |",
         "|---|---|---|",
     ]
-    for q in sorted(DRAWDOWN_QUAL) + ["null"]:
+    for q in sorted(DRAWDOWN_QUAL):
         cnt = dq_counts.get(q, 0)
         lines.append(f"| {q} | {cnt} | {_pct(cnt, n_exp)} |")
+    # True null = exportable rows without any drawdown quality assigned
+    dq_null = n_exp - sum(dq_counts.values())
+    lines.append(f"| _(unlabeled)_ | {dq_null} | {_pct(dq_null, n_exp)} |")
     lines.append(f"| _(daily_proxy rows)_ | {proxy_rows} | {_pct(proxy_rows, n_exp)} |")
 
     lines += [
@@ -995,7 +1002,7 @@ def _write_report(
         buckets = _pd.cut(
             prices,
             bins=[0, 1, 5, 10, float("inf")],
-            labels=["<$1", "$1–5", "$5–10", ">$10"],
+            labels=["$0–$1", "$1–$5", "$5–$10", ">$10"],
         )
         for label_, cnt in buckets.value_counts(sort=False).items():
             lines.append(f"| {label_} | {cnt} | {_pct(int(cnt), n_exp)} |")
@@ -1320,14 +1327,7 @@ class RocketDatasetBuilder:
         all_fields   = set(RocketRecord.model_fields.keys())
         manifest     = set(_EXPORT_COLUMNS)
         # Internal/pipeline fields excluded by design — not counted as "dropped"
-        _INTERNAL = {
-            "rejection_reason", "intraday_bars", "daily_bars",
-            "stored_mfe_pct", "stored_mae_pct",
-            "stored_return_next_day_high_pct", "stored_return_two_day_high_pct",
-            "stored_return_five_day_high_pct", "stored_return_15m_pct",
-            "stored_return_1h_pct", "stored_return_4h_pct",
-            "duplicate_of", "dropped_source_type", "kept_source_type", "dedup_reason",
-        }
+        _INTERNAL = _INTERNAL_FIELDS
         non_manifest = sorted(all_fields - manifest - _INTERNAL)
 
         valid    = [r for r in records if not r.rejection_reason]
@@ -1381,12 +1381,12 @@ class RocketDatasetBuilder:
         proxy_rows  = sum(1 for r in exportable if r.drawdown_data_quality == "daily_proxy")
         dedup_recs  = [r for r in records if r.dedup_reason]
 
-        # Pricing fetch stats: count outcome_source distribution
+        # Pricing fetch stats: count drawdown_data_quality distribution
         fetch_stats: Dict[str, int] = {"fetched": 0, "unavailable": 0}
         for rec in exportable:
-            if rec.outcome_source in ("bars", "daily_proxy"):
+            if rec.drawdown_data_quality in ("intraday_exact", "daily_proxy"):
                 fetch_stats["fetched"] += 1
-            elif rec.outcome_source == "missing":
+            elif rec.drawdown_data_quality == "missing":
                 fetch_stats["unavailable"] += 1
 
         _write_report(

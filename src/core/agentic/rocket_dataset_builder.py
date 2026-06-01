@@ -623,7 +623,7 @@ def compute_mfe_mae_profiles(
         ("60m", timedelta(minutes=60)),
         ("1d",  timedelta(hours=24)),
         ("2d",  timedelta(hours=48)),
-        ("5d",  timedelta(days=8)),
+        ("5d",  timedelta(hours=120)),   # 5 × 24 hours = 5 calendar days
     ]
 
     result = MFEMAEProfiles()
@@ -694,6 +694,7 @@ def compute_drawdown_quality(
     alert_price: float,
     tier: Optional[str],
     drawdown_data_quality: str,
+    alert_time: Optional[datetime] = None,
 ) -> Optional[str]:
     """Classify drawdown quality: CLEAN_RUNNER, DIRTY_RUNNER, or TRAP.
 
@@ -715,6 +716,13 @@ def compute_drawdown_quality(
         return None
 
     bars = intraday_bars if intraday_bars else (daily_bars if daily_bars else [])
+    if not bars:
+        return None
+
+    # Filter to bars after alert_time only
+    if alert_time is not None:
+        alert_dt = _aware(alert_time)
+        bars = [b for b in bars if (_bar_ts(b) or datetime.min.replace(tzinfo=timezone.utc)) >= alert_dt]
     if not bars:
         return None
 

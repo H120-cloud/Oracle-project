@@ -1359,7 +1359,7 @@ class RocketDatasetBuilder:
         rejected_path = self.data_dir / "rocket_rejected_rows.csv"
         report_path   = self.docs_dir / "rocket_dataset_report.md"
 
-        df.to_csv(str(csv_path), index=False)
+        df.to_csv(str(csv_path), index=False, encoding="utf-8")
         df.to_parquet(str(parquet_path), compression="snappy", index=False)
 
         rej_rows = [
@@ -1371,7 +1371,7 @@ class RocketDatasetBuilder:
             }
             for r in rejected
         ]
-        pd.DataFrame(rej_rows).to_csv(str(rejected_path), index=False)
+        pd.DataFrame(rej_rows).to_csv(str(rejected_path), index=False, encoding="utf-8")
 
         # Compute stats for BuildSummary and report
         tier_counts = _count_values(exportable, "runner_tier")

@@ -79,6 +79,10 @@ SOURCE_TYPES: set[str] = {
 
 DEDUP_PRIORITY = ["telegram", "missed", "prenews", "shadow", "backfill"]
 
+_REJECTION_DUPLICATE   = "duplicate"
+_DEDUP_REASON_PRIORITY = "priority_order"
+_UNKNOWN_TICKER        = "UNKNOWN"
+
 # ---------------------------------------------------------------------------
 # Trading-session constants
 # ---------------------------------------------------------------------------
@@ -232,6 +236,9 @@ class RocketRecord(BaseModel):
     stored_return_next_day_high_pct: Optional[float] = Field(default=None, exclude=True)
     stored_return_two_day_high_pct: Optional[float] = Field(default=None, exclude=True)
     stored_return_five_day_high_pct: Optional[float] = Field(default=None, exclude=True)
+    stored_return_15m_pct: Optional[float] = Field(default=None, exclude=True)
+    stored_return_1h_pct:  Optional[float] = Field(default=None, exclude=True)
+    stored_return_4h_pct:  Optional[float] = Field(default=None, exclude=True)
 
     # Dedup tracking (internal only — excluded from manifest)
     duplicate_of: Optional[str] = Field(default=None, exclude=True)
@@ -824,20 +831,18 @@ class RocketDatasetBuilder:
         )
         return records
 
+    def _load_alert_file(self, filename: str, source_type: str) -> List[RocketRecord]:
+        raw = load_json_file(str(self.data_dir / filename), default=[]) or []
+        return [self._norm_telegram(r, source_type) for r in raw]
+
     def _load_telegram(self) -> List[RocketRecord]:
-        path = self.data_dir / "news_momentum_telegram_alerts.json"
-        raw = load_json_file(str(path), default=[]) or []
-        return [self._norm_telegram(r, "telegram") for r in raw]
+        return self._load_alert_file("news_momentum_telegram_alerts.json", "telegram")
 
     def _load_shadow(self) -> List[RocketRecord]:
-        path = self.data_dir / "news_momentum_shadow_alerts.json"
-        raw = load_json_file(str(path), default=[]) or []
-        return [self._norm_telegram(r, "shadow") for r in raw]
+        return self._load_alert_file("news_momentum_shadow_alerts.json", "shadow")
 
     def _load_backfill(self) -> List[RocketRecord]:
-        path = self.data_dir / "news_momentum_backfill_records.json"
-        raw = load_json_file(str(path), default=[]) or []
-        return [self._norm_telegram(r, "backfill") for r in raw]
+        return self._load_alert_file("news_momentum_backfill_records.json", "backfill")
 
     def _norm_telegram(self, raw: Dict[str, Any], source_type: str) -> RocketRecord:
         """Normalise telegram/shadow/backfill records (all share the same schema)."""
@@ -853,7 +858,7 @@ class RocketDatasetBuilder:
             row_id=row_id,
             source_type=source_type,
             rejection_reason=rejection,
-            ticker=ticker or "UNKNOWN",
+            ticker=ticker or _UNKNOWN_TICKER,
             alert_time=alert_time or datetime(2000, 1, 1, tzinfo=timezone.utc),
             price_at_alert=price or 0.0,
             catalyst_type=cat_type,
@@ -900,6 +905,9 @@ class RocketDatasetBuilder:
             stored_return_next_day_high_pct=_to_float(raw.get("return_next_day_high_pct")),
             stored_return_two_day_high_pct=_to_float(raw.get("return_two_day_high_pct")),
             stored_return_five_day_high_pct=_to_float(raw.get("return_five_day_high_pct")),
+            stored_return_15m_pct=_to_float(raw.get("return_15m_pct")),
+            stored_return_1h_pct=_to_float(raw.get("return_1h_pct")),
+            stored_return_4h_pct=_to_float(raw.get("return_4h_pct")),
         )
 
     def _load_missed(self) -> List[RocketRecord]:
@@ -919,7 +927,7 @@ class RocketDatasetBuilder:
                 row_id=row_id,
                 source_type="missed",
                 rejection_reason=rejection,
-                ticker=ticker or "UNKNOWN",
+                ticker=ticker or _UNKNOWN_TICKER,
                 alert_time=alert_time or datetime(2000, 1, 1, tzinfo=timezone.utc),
                 price_at_alert=price or 0.0,
                 catalyst_type=cat_type,
@@ -938,7 +946,13 @@ class RocketDatasetBuilder:
     def _load_prenews(self) -> List[RocketRecord]:
         path = self.data_dir / "pre_news_shadow_v2.json"
         raw_obj = load_json_file(str(path), default={}) or {}
-        raw = raw_obj.get("records", []) if isinstance(raw_obj, dict) else []
+        if isinstance(raw_obj, list):
+            raw = raw_obj
+        elif isinstance(raw_obj, dict):
+            raw = raw_obj.get("records", [])
+        else:
+            logger.warning("_load_prenews: unexpected format in pre_news_shadow_v2.json, skipping")
+            raw = []
         out: List[RocketRecord] = []
         for r in raw:
             shadow_id  = r.get("shadow_id") or f"prenews_{id(r)}"
@@ -952,7 +966,7 @@ class RocketDatasetBuilder:
                 row_id=row_id,
                 source_type="prenews",
                 rejection_reason=rejection,
-                ticker=ticker or "UNKNOWN",
+                ticker=ticker or _UNKNOWN_TICKER,
                 alert_time=alert_time or datetime(2000, 1, 1, tzinfo=timezone.utc),
                 price_at_alert=price or 0.0,
                 prenews_anomaly_score=_to_float(r.get("suspicion_score")),
@@ -986,14 +1000,14 @@ class RocketDatasetBuilder:
                     existing.duplicate_of        = rec.row_id
                     existing.dropped_source_type = existing.source_type
                     existing.kept_source_type    = rec.source_type
-                    existing.dedup_reason        = "priority_order"
-                    existing.rejection_reason    = "duplicate"
+                    existing.dedup_reason        = _DEDUP_REASON_PRIORITY
+                    existing.rejection_reason    = _REJECTION_DUPLICATE
                     best[bucket] = i
                 else:
                     # Existing wins — mark new as dropped
                     rec.duplicate_of        = existing.row_id
                     rec.dropped_source_type = rec.source_type
                     rec.kept_source_type    = existing.source_type
-                    rec.dedup_reason        = "priority_order"
-                    rec.rejection_reason    = "duplicate"
+                    rec.dedup_reason        = _DEDUP_REASON_PRIORITY
+                    rec.rejection_reason    = _REJECTION_DUPLICATE
         return records

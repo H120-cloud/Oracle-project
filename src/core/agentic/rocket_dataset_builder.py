@@ -47,23 +47,9 @@ BUILDER_VERSION: str = "1.0.0"
 # String-set constants
 # ---------------------------------------------------------------------------
 
-RUNNER_TIERS: set[str] = {
-    "no_move",
-    "minor_move",
-    "moderate_move",
-    "strong_move",
-    "runner",
-    "mega_runner",
-}
+RUNNER_TIERS: set[str] = {"STANDARD_WIN", "MAJOR_RUNNER", "MONSTER_RUNNER", "LEGENDARY_RUNNER"}
 
-DRAWDOWN_QUAL: set[str] = {
-    "clean_breakout",
-    "shallow_pullback",
-    "moderate_pullback",
-    "deep_pullback",
-    "reversal",
-    "insufficient_data",
-}
+DRAWDOWN_QUAL: set[str] = {"CLEAN_RUNNER", "DIRTY_RUNNER", "TRAP"}
 
 DRAWDOWN_DQ: set[str] = {
     "ok",
@@ -532,7 +518,7 @@ def compute_peak_metrics(
 
     for bar in bars:
         ts = _bar_ts(bar)
-        if ts is None or ts < alert_time or ts > window_end:
+        if ts is None or _aware(ts) < alert_time or _aware(ts) > window_end:
             continue
         high = _bar_high(bar)
         if high is None:
@@ -561,7 +547,6 @@ def compute_peak_metrics(
 def compute_runner_tier(
     peak_move_pct: Optional[float],
     time_to_peak_minutes: Optional[float],
-    use_trading_time: bool = True,
 ) -> Optional[str]:
     """Assign runner tier based on peak_move_pct and timing.
 
@@ -623,7 +608,7 @@ def compute_mfe_mae_profiles(
         ("60m", timedelta(minutes=60)),
         ("1d",  timedelta(hours=24)),
         ("2d",  timedelta(hours=48)),
-        ("5d",  timedelta(hours=120)),   # 5 × 24 hours = 5 calendar days
+        ("5d",  timedelta(days=8)),   # matches compute_peak_metrics observation window
     ]
 
     result = MFEMAEProfiles()
@@ -635,7 +620,7 @@ def compute_mfe_mae_profiles(
             lows: List[float] = []
             for bar in intraday_bars:
                 ts = _bar_ts(bar)
-                if ts is None or ts < alert_time or ts > end:
+                if ts is None or _aware(ts) < alert_time or _aware(ts) > end:
                     continue
                 h = _bar_high(bar)
                 l = _bar_low(bar)
@@ -666,7 +651,8 @@ def compute_mfe_mae_profiles(
                     day_highs.append(h)
                 if l is not None:
                     day_lows.append(l)
-                days_seen += 1
+                if h is not None or l is not None:  # only count as a trading day if data present
+                    days_seen += 1
                 if days_seen >= n_days:
                     break
             if day_highs:
@@ -686,6 +672,12 @@ def compute_mfe_mae_profiles(
         if v is not None:
             setattr(result, result_field, v)
     return result
+
+
+_TRAP_ACTIVATE_PCT    = 20.0   # stock must rise >= +20% to activate TRAP watch
+_TRAP_RULE1_DOWN_PCT  = -20.0  # Rule 1: low must fall to <= -20% from alert
+_TRAP_RULE2_PEAK_LOSS = 40.0   # Rule 2: close must lose >= 40% from peak
+_DIRTY_MAE_THRESHOLD  = -15.0  # rolling MAE <= -15% before target → DIRTY
 
 
 def compute_drawdown_quality(
@@ -722,13 +714,13 @@ def compute_drawdown_quality(
     # Filter to bars after alert_time only
     if alert_time is not None:
         alert_dt = _aware(alert_time)
-        bars = [b for b in bars if (_bar_ts(b) or datetime.min.replace(tzinfo=timezone.utc)) >= alert_dt]
+        bars = [b for b in bars if (_bar_ts(b) is not None and _aware(_bar_ts(b)) >= alert_dt)]
     if not bars:
         return None
 
     target_price     = alert_price * (1.0 + target_pct / 100.0)
-    trap_up_thresh   = alert_price * 1.20   # +20% activates TRAP watch
-    trap_down_thresh = alert_price * 0.80   # -20% from alert triggers Rule 1
+    trap_up_thresh   = alert_price * (1.0 + _TRAP_ACTIVATE_PCT / 100.0)
+    trap_down_thresh = alert_price * (1.0 + _TRAP_RULE1_DOWN_PCT / 100.0)
 
     # ── Pass 1: TRAP detection (full window) ─────────────────────────────
     peak_seen = alert_price
@@ -750,7 +742,7 @@ def compute_drawdown_quality(
                 return "TRAP"
             # Rule 2: close loses ≥ 40% from peak
             if c is not None and peak_seen > 0:
-                if (1.0 - c / peak_seen) * 100.0 >= 40.0:
+                if (1.0 - c / peak_seen) * 100.0 >= _TRAP_RULE2_PEAK_LOSS:
                     return "TRAP"
 
     # ── Pass 2: CLEAN / DIRTY (path to target) ───────────────────────────
@@ -766,7 +758,7 @@ def compute_drawdown_quality(
                 rolling_mae = mae
 
         if h is not None and h >= target_price:
-            return "DIRTY_RUNNER" if rolling_mae <= -15.0 else "CLEAN_RUNNER"
+            return "DIRTY_RUNNER" if rolling_mae <= _DIRTY_MAE_THRESHOLD else "CLEAN_RUNNER"
 
     return None  # target never reached
 
@@ -782,7 +774,7 @@ def _compute_data_quality_score(record: "RocketRecord") -> float:
       each MFE+MAE window pair  =  8  (× 5 windows = 40)
     """
     score = 0.0
-    if record.intraday_bars:
+    if record.intraday_bars and record.peak_timestamp is not None:
         score += 30.0
     if record.peak_timestamp is not None:
         score += 10.0

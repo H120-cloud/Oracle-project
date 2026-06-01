@@ -82,10 +82,11 @@ OUTCOME_SOURCE: set[str] = {
 }
 
 SOURCE_TYPES: set[str] = {
-    "news_momentum",
-    "prenews",
-    "manual",
+    "telegram",
+    "shadow",
     "backfill",
+    "missed",
+    "prenews",
 }
 
 DEDUP_PRIORITY = ["telegram", "missed", "prenews", "shadow", "backfill"]
@@ -189,7 +190,7 @@ class RocketRecord(BaseModel):
     # ── Identity ────────────────────────────────────────────────────────────
     row_id: str
     source_type: str
-    rejection_reason: Optional[str] = None
+    rejection_reason: Optional[str] = Field(default=None, exclude=True)
     dataset_version: str = DATASET_VERSION
     builder_version: str = BUILDER_VERSION
 
@@ -370,7 +371,8 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     Parse *value* into a datetime.
 
     Accepts:
-    * datetime objects (returned as-is)
+    * datetime objects (returned as-is, made timezone-aware)
+    * bare date objects (converted to midnight UTC)
     * ISO-8601 strings
     * Unix timestamps (int/float)
 
@@ -379,7 +381,9 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value
+        return _aware(value)
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
     if isinstance(value, (int, float)):
         try:
             return datetime.fromtimestamp(value, tz=timezone.utc)

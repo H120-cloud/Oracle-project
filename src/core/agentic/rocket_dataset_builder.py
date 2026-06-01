@@ -34,6 +34,8 @@ except ImportError:  # Python < 3.9
 
 from pydantic import BaseModel, Field
 
+from src.utils.atomic_json import load_json_file
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -793,3 +795,211 @@ def _compute_data_quality_score(record: "RocketRecord") -> float:
         if mfe is not None and mae is not None:
             score += 8.0
     return min(100.0, score)
+
+
+# ---------------------------------------------------------------------------
+# RocketDatasetBuilder
+# ---------------------------------------------------------------------------
+
+
+class RocketDatasetBuilder:
+    """Four-stage pipeline: ingest → enrich → label → assemble."""
+
+    def __init__(
+        self,
+        data_dir: Path = _DEFAULT_DATA_DIR,
+        docs_dir: Path = _DEFAULT_DOCS_DIR,
+    ) -> None:
+        self.data_dir = Path(data_dir)
+        self.docs_dir = Path(docs_dir)
+
+    # ── Stage 1: Ingestion ────────────────────────────────────────────────
+
+    def _ingest(self) -> List[RocketRecord]:
+        records: List[RocketRecord] = []
+        records.extend(self._load_telegram())
+        records.extend(self._load_shadow())
+        records.extend(self._load_backfill())
+        records.extend(self._load_missed())
+        records.extend(self._load_prenews())
+        records = self._deduplicate(records)
+        logger.info(
+            "Ingested %d records (%d rejected)",
+            len(records),
+            sum(1 for r in records if r.rejection_reason),
+        )
+        return records
+
+    def _load_telegram(self) -> List[RocketRecord]:
+        path = self.data_dir / "news_momentum_telegram_alerts.json"
+        raw = load_json_file(str(path), default=[]) or []
+        return [self._norm_telegram(r, "telegram") for r in raw]
+
+    def _load_shadow(self) -> List[RocketRecord]:
+        path = self.data_dir / "news_momentum_shadow_alerts.json"
+        raw = load_json_file(str(path), default=[]) or []
+        return [self._norm_telegram(r, "shadow") for r in raw]
+
+    def _load_backfill(self) -> List[RocketRecord]:
+        path = self.data_dir / "news_momentum_backfill_records.json"
+        raw = load_json_file(str(path), default=[]) or []
+        return [self._norm_telegram(r, "backfill") for r in raw]
+
+    def _norm_telegram(self, raw: Dict[str, Any], source_type: str) -> RocketRecord:
+        """Normalise telegram/shadow/backfill records (all share the same schema)."""
+        alert_id  = raw.get("alert_id") or f"{source_type}_{id(raw)}"
+        row_id    = f"{source_type}_{alert_id}"
+        ticker    = (raw.get("ticker") or "").strip().upper()
+        alert_time = _parse_dt(raw.get("sent_at"))
+        price     = _to_float(raw.get("price_at_alert"))
+        cat_type  = raw.get("catalyst_type") or None
+        cat_sub   = raw.get("catalyst_subtype") or None
+        rejection = _anchor_check(ticker, alert_time, price, cat_type, cat_sub, source_type)
+        return RocketRecord(
+            row_id=row_id,
+            source_type=source_type,
+            rejection_reason=rejection,
+            ticker=ticker or "UNKNOWN",
+            alert_time=alert_time or datetime(2000, 1, 1, tzinfo=timezone.utc),
+            price_at_alert=price or 0.0,
+            catalyst_type=cat_type,
+            catalyst_subtype=cat_sub,
+            catalyst_category=raw.get("catalyst_category"),
+            session_type=raw.get("session_type"),
+            float_category=raw.get("float_category"),
+            market_cap_category=raw.get("market_cap_category"),
+            move_pct_at_alert=_to_float(raw.get("move_pct_at_alert")),
+            rvol_at_alert=_to_float(raw.get("rvol_at_alert")),
+            volume_at_alert=_to_int(raw.get("volume_at_alert")),
+            spread_pct_at_alert=_to_float(raw.get("spread_pct_at_alert")),
+            trap_risk_at_alert=_to_float(raw.get("trap_risk_at_alert")),
+            dilution_risk_at_alert=_to_float(raw.get("dilution_risk_at_alert")),
+            velocity_score_at_alert=_to_float(raw.get("velocity_score_at_alert")),
+            sources_seen_count=_to_int(raw.get("sources_seen_count")),
+            is_negative=raw.get("is_negative"),
+            is_vague=raw.get("is_vague"),
+            is_delayed_reaction=raw.get("is_delayed_reaction"),
+            prenews_anomaly_score=_to_float(raw.get("prenews_anomaly_score")),
+            ml_predicted_win_prob=_to_float(raw.get("ml_predicted_win_prob")),
+            news_impact_score=_to_float(raw.get("news_impact_score")),
+            expected_return_score=_to_float(raw.get("expected_return_score")),
+            continuation_probability=_to_float(raw.get("continuation_probability")),
+            multi_day_score=_to_float(raw.get("multi_day_score")),
+            sec_dilution_probability=_to_float(raw.get("sec_dilution_probability")),
+            sec_toxic_financing_score=_to_float(raw.get("sec_toxic_financing_score")),
+            sec_warrant_overhang_score=_to_float(raw.get("sec_warrant_overhang_score")),
+            sec_cash_runway_score=_to_float(raw.get("sec_cash_runway_score")),
+            sec_survival_risk_score=_to_float(raw.get("sec_survival_risk_score")),
+            sec_balance_sheet_quality_score=_to_float(raw.get("sec_balance_sheet_quality_score")),
+            sec_offering_risk_score=_to_float(raw.get("sec_offering_risk_score")),
+            sec_reverse_split_risk_score=_to_float(raw.get("sec_reverse_split_risk_score")),
+            sec_structural_trap_risk_score=_to_float(raw.get("sec_structural_trap_risk_score")),
+            sec_historical_dilution_behavior_score=_to_float(raw.get("sec_historical_dilution_behavior_score")),
+            sec_dilution_behavior=raw.get("sec_dilution_behavior"),
+            sec_oracle_action=raw.get("sec_oracle_action"),
+            sec_atm_active=raw.get("sec_atm_active"),
+            sec_going_concern_active=raw.get("sec_going_concern_active"),
+            outcome_window_start=alert_time,
+            # Internal stored-field fallbacks (excluded from export)
+            stored_mfe_pct=_to_float(raw.get("mfe_pct")),
+            stored_mae_pct=_to_float(raw.get("mae_pct")),
+            stored_return_next_day_high_pct=_to_float(raw.get("return_next_day_high_pct")),
+            stored_return_two_day_high_pct=_to_float(raw.get("return_two_day_high_pct")),
+            stored_return_five_day_high_pct=_to_float(raw.get("return_five_day_high_pct")),
+        )
+
+    def _load_missed(self) -> List[RocketRecord]:
+        path = self.data_dir / "news_momentum_missed_winners.json"
+        raw = load_json_file(str(path), default=[]) or []
+        out: List[RocketRecord] = []
+        for r in raw:
+            alert_id  = r.get("id") or f"missed_{id(r)}"
+            row_id    = f"missed_{alert_id}"
+            ticker    = (r.get("ticker") or "").strip().upper()
+            alert_time = _parse_dt(r.get("news_time"))
+            price     = _to_float(r.get("price_at_news"))
+            cat_sub   = r.get("catalyst_sub_type") or r.get("catalyst_subtype") or None
+            cat_type  = r.get("catalyst_category") or None
+            rejection = _anchor_check(ticker, alert_time, price, cat_type, cat_sub, "missed")
+            out.append(RocketRecord(
+                row_id=row_id,
+                source_type="missed",
+                rejection_reason=rejection,
+                ticker=ticker or "UNKNOWN",
+                alert_time=alert_time or datetime(2000, 1, 1, tzinfo=timezone.utc),
+                price_at_alert=price or 0.0,
+                catalyst_type=cat_type,
+                catalyst_subtype=cat_sub,
+                catalyst_category=cat_type,
+                news_impact_score=_to_float(r.get("news_impact_score")),
+                expected_return_score=_to_float(r.get("expected_return_score")),
+                continuation_probability=_to_float(r.get("continuation_probability")),
+                multi_day_score=_to_float(r.get("multi_day_score")),
+                trap_risk_at_alert=_to_float(r.get("trap_risk")),
+                dilution_risk_at_alert=_to_float(r.get("dilution_risk")),
+                outcome_window_start=alert_time,
+            ))
+        return out
+
+    def _load_prenews(self) -> List[RocketRecord]:
+        path = self.data_dir / "pre_news_shadow_v2.json"
+        raw_obj = load_json_file(str(path), default={}) or {}
+        raw = raw_obj.get("records", []) if isinstance(raw_obj, dict) else []
+        out: List[RocketRecord] = []
+        for r in raw:
+            shadow_id  = r.get("shadow_id") or f"prenews_{id(r)}"
+            row_id     = f"prenews_{shadow_id}"
+            ticker     = (r.get("ticker") or "").strip().upper()
+            alert_time = _parse_dt(r.get("detection_time"))
+            price      = _to_float(r.get("price_at_detection"))
+            # prenews: no catalyst required (anomaly detected before any news)
+            rejection  = _anchor_check(ticker, alert_time, price, None, None, "prenews")
+            out.append(RocketRecord(
+                row_id=row_id,
+                source_type="prenews",
+                rejection_reason=rejection,
+                ticker=ticker or "UNKNOWN",
+                alert_time=alert_time or datetime(2000, 1, 1, tzinfo=timezone.utc),
+                price_at_alert=price or 0.0,
+                prenews_anomaly_score=_to_float(r.get("suspicion_score")),
+                outcome_window_start=alert_time,
+            ))
+        return out
+
+    def _deduplicate(self, records: List[RocketRecord]) -> List[RocketRecord]:
+        """Keep the highest-priority source for each (ticker, minute-bucket).
+
+        Dropped duplicates are retained in the list with rejection_reason="duplicate"
+        and dedup metadata fields populated for the calibration report.
+        Priority: telegram > missed > prenews > shadow > backfill
+        """
+        priority = {src: i for i, src in enumerate(DEDUP_PRIORITY)}
+        best: Dict[Tuple[str, str], int] = {}  # bucket → index of winning record
+
+        for i, rec in enumerate(records):
+            if rec.rejection_reason:
+                continue  # already-rejected rows don't participate in dedup
+            bucket = (rec.ticker, str(_minute_bucket(rec.alert_time)))
+            if bucket not in best:
+                best[bucket] = i
+            else:
+                existing_idx = best[bucket]
+                existing = records[existing_idx]
+                new_pri = priority.get(rec.source_type, 99)
+                old_pri = priority.get(existing.source_type, 99)
+                if new_pri < old_pri:
+                    # New record wins — mark existing as dropped
+                    existing.duplicate_of        = rec.row_id
+                    existing.dropped_source_type = existing.source_type
+                    existing.kept_source_type    = rec.source_type
+                    existing.dedup_reason        = "priority_order"
+                    existing.rejection_reason    = "duplicate"
+                    best[bucket] = i
+                else:
+                    # Existing wins — mark new as dropped
+                    rec.duplicate_of        = existing.row_id
+                    rec.dropped_source_type = rec.source_type
+                    rec.kept_source_type    = existing.source_type
+                    rec.dedup_reason        = "priority_order"
+                    rec.rejection_reason    = "duplicate"
+        return records

@@ -88,12 +88,7 @@ SOURCE_TYPES: set[str] = {
     "backfill",
 }
 
-DEDUP_PRIORITY: list[str] = [
-    "news_momentum",
-    "prenews",
-    "manual",
-    "backfill",
-]
+DEDUP_PRIORITY = ["telegram", "missed", "prenews", "shadow", "backfill"]
 
 # ---------------------------------------------------------------------------
 # Trading-session constants

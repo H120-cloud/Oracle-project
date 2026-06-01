@@ -1030,7 +1030,7 @@ class RocketDatasetBuilder:
             for rec in records:
                 if rec.rejection_reason:
                     continue
-                if rec.intraday_bars is None and rec.daily_bars is None:
+                if not rec.intraday_bars and not rec.daily_bars:
                     rec.drawdown_data_quality = "missing"
             return records
 
@@ -1041,18 +1041,19 @@ class RocketDatasetBuilder:
                 continue
 
             # Records that already have bars (e.g. pre-enriched) — just set quality flag
-            if rec.intraday_bars is not None or rec.daily_bars is not None:
+            intraday_ok = bool(rec.intraday_bars)
+            daily_ok    = bool(rec.daily_bars)
+            if intraday_ok or daily_ok:
                 if rec.drawdown_data_quality is None:
-                    rec.drawdown_data_quality = (
-                        "intraday_exact" if rec.intraday_bars else "daily_proxy"
-                    )
+                    rec.drawdown_data_quality = "intraday_exact" if intraday_ok else "daily_proxy"
                 continue
 
             ticker = rec.ticker
             if ticker not in fetch_cache:
+                if fetch_cache:  # skip throttle before first call; sleep before subsequent ones
+                    _time_module.sleep(_FETCH_DELAY)
                 intraday, daily = self._fetch_bars(provider, ticker)
                 fetch_cache[ticker] = {"intraday": intraday, "daily": daily}
-                _time_module.sleep(_FETCH_DELAY)
 
             cached = fetch_cache[ticker]
             rec.intraday_bars = cached["intraday"]

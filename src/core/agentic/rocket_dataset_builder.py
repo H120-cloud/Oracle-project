@@ -92,8 +92,8 @@ _FETCH_DELAY: float = 0.25  # seconds between external API calls
 # Default path constants
 # ---------------------------------------------------------------------------
 
-_DEFAULT_DATA_DIR: Path = Path(__file__).resolve().parents[3] / "data" / "rocket"
-_DEFAULT_DOCS_DIR: Path = Path(__file__).resolve().parents[3] / "docs" / "rocket"
+_DEFAULT_DATA_DIR: Path = Path("data/agentic")
+_DEFAULT_DOCS_DIR: Path = Path("docs")
 
 # ---------------------------------------------------------------------------
 # Leakage manifests
@@ -451,16 +451,10 @@ def _anchor_check(
     return None
 
 
-def _minute_bucket(dt: datetime, bucket_size: int = 1) -> datetime:
-    """
-    Floor *dt* to the nearest *bucket_size*-minute interval.
-
-    Example: _minute_bucket(09:37:45, 5) → 09:35:00
-    """
-    dt = _aware(dt)
-    total_minutes = dt.hour * 60 + dt.minute
-    floored = (total_minutes // bucket_size) * bucket_size
-    return dt.replace(hour=floored // 60, minute=floored % 60, second=0, microsecond=0)
+def _minute_bucket(ticker: str, dt: datetime) -> Tuple[str, str]:
+    """Return a dedup key (ticker, minute-floored ISO timestamp)."""
+    rounded = _aware(dt).replace(second=0, microsecond=0)
+    return (ticker, rounded.isoformat())
 
 
 def _count_values(items: Sequence[Optional[str]]) -> Dict[str, int]:
@@ -979,7 +973,7 @@ class RocketDatasetBuilder:
         for i, rec in enumerate(records):
             if rec.rejection_reason:
                 continue  # already-rejected rows don't participate in dedup
-            bucket = (rec.ticker, str(_minute_bucket(rec.alert_time)))
+            bucket = _minute_bucket(rec.ticker, rec.alert_time)
             if bucket not in best:
                 best[bucket] = i
             else:

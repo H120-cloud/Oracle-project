@@ -66,10 +66,10 @@ DRAWDOWN_DQ: set[str] = {
 }
 
 OUTCOME_SOURCE: set[str] = {
-    "intraday_bars",
-    "daily_bars",
-    "stored_fields",
-    "none",
+    "bars",
+    "daily_proxy",
+    "stored_resolved",
+    "missing",
 }
 
 SOURCE_TYPES: set[str] = {
@@ -1039,6 +1039,89 @@ class RocketDatasetBuilder:
     ) -> None:
         self.data_dir = Path(data_dir)
         self.docs_dir = Path(docs_dir)
+
+    # ── Public API ────────────────────────────────────────────────────────
+
+    def build(self) -> BuildSummary:
+        """Run the full four-stage pipeline and return a BuildSummary."""
+        import time as _t
+        t0 = _t.monotonic()
+        records = self._ingest()
+        records = self._enrich(records)
+        records = self._label(records)
+        summary = self._assemble(records, elapsed=_t.monotonic() - t0)
+        return summary
+
+    # ── Stage 3: Labelling ────────────────────────────────────────────────
+
+    def _label(self, records: List[RocketRecord]) -> List[RocketRecord]:
+        for rec in records:
+            if rec.rejection_reason:
+                continue
+            try:
+                self._apply_labels(rec)
+            except Exception as exc:
+                logger.warning("Label error for %s: %s", rec.row_id, exc)
+        return records
+
+    @staticmethod
+    def _apply_labels(rec: RocketRecord) -> None:
+        """Apply all pure label functions to a single record in-place."""
+        stored = {
+            "stored_return_next_day_high_pct": rec.stored_return_next_day_high_pct,
+            "stored_return_two_day_high_pct":  rec.stored_return_two_day_high_pct,
+            "stored_return_five_day_high_pct": rec.stored_return_five_day_high_pct,
+        }
+
+        # Peak metrics
+        pm = compute_peak_metrics(
+            rec.intraday_bars,
+            rec.daily_bars,
+            rec.price_at_alert,
+            rec.alert_time,
+            stored_five_day_high_pct=rec.stored_return_five_day_high_pct,
+        )
+        rec.peak_move_pct                  = pm.peak_move_pct
+        rec.peak_timestamp                 = pm.peak_timestamp
+        rec.calendar_time_to_peak_minutes  = pm.calendar_time_to_peak_minutes
+        rec.trading_time_to_peak_minutes   = pm.trading_time_to_peak_minutes
+
+        # Outcome source
+        if rec.intraday_bars or rec.daily_bars:
+            rec.outcome_source = "bars" if rec.intraday_bars else "daily_proxy"
+        elif any(v is not None for v in stored.values()):
+            rec.outcome_source = "stored_resolved"
+        else:
+            rec.outcome_source = "missing"
+
+        # Runner tier (prefer trading time, fall back to calendar time)
+        time_mins = rec.trading_time_to_peak_minutes or rec.calendar_time_to_peak_minutes
+        rec.runner_tier = compute_runner_tier(rec.peak_move_pct, time_mins)
+
+        # MFE/MAE profiles
+        profiles = compute_mfe_mae_profiles(
+            rec.intraday_bars,
+            rec.daily_bars,
+            rec.price_at_alert,
+            rec.alert_time,
+            stored,
+        )
+        for field in MFEMAEProfiles.model_fields:
+            setattr(rec, field, getattr(profiles, field))
+
+        # Drawdown quality (pass alert_time for bar filtering)
+        dq_flag = rec.drawdown_data_quality or "missing"
+        rec.drawdown_quality = compute_drawdown_quality(
+            rec.intraday_bars,
+            rec.daily_bars,
+            rec.price_at_alert,
+            rec.runner_tier,
+            dq_flag,
+            alert_time=rec.alert_time,
+        )
+
+        # Data quality score
+        rec.data_quality_score = _compute_data_quality_score(rec)
 
     # ── Stage 1: Ingestion ────────────────────────────────────────────────
 

@@ -28,6 +28,8 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import pandas as pd
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:  # Python < 3.9
@@ -465,27 +467,65 @@ def _minute_bucket(ticker: str, dt: datetime) -> Tuple[str, str]:
     return (ticker, rounded.isoformat())
 
 
-def _count_values(items: Sequence[Optional[str]]) -> Dict[str, int]:
-    """Return a frequency dict for a sequence of nullable string values."""
+def _count_values(
+    items: Any,
+    col: Optional[str] = None,
+) -> Dict[str, int]:
+    """Return a frequency dict for a sequence of nullable string values.
+
+    Two call forms:
+    * ``_count_values(seq_of_strings)``  — legacy flat-sequence form
+    * ``_count_values(records, "column_name")``  — extract attribute from each record
+    """
     counts: Dict[str, int] = {}
-    for item in items:
-        if item is None:
-            continue
-        counts[item] = counts.get(item, 0) + 1
+    if col is not None:
+        # New form: extract attribute from each record
+        for item in items:
+            val = getattr(item, col, None)
+            if val is None:
+                continue
+            counts[str(val)] = counts.get(str(val), 0) + 1
+    else:
+        # Legacy form: flat sequence of nullable strings
+        for item in items:
+            if item is None:
+                continue
+            counts[item] = counts.get(item, 0) + 1
     return counts
 
 
-def _null_rates(records: Sequence[RocketRecord], columns: Sequence[str]) -> Dict[str, float]:
+def _null_rates(
+    records: Any,
+    columns: Sequence[str],
+) -> Dict[str, float]:
     """
     Compute per-column null rates across *records*.
 
+    Accepts either a list of ``RocketRecord`` objects or a ``pd.DataFrame``.
     Returns a dict mapping column name → fraction of records where the value
-    is None (0.0 to 1.0).  Returns 1.0 for all columns when *records* is empty.
+    is None / NaN (0.0 to 1.0).  Returns 1.0 for all columns when empty.
     """
+    try:
+        import pandas as _pd_check
+        if isinstance(records, _pd_check.DataFrame):
+            n = len(records)
+            if n == 0:
+                return {col: 1.0 for col in columns}
+            result: Dict[str, float] = {}
+            for col in columns:
+                if col in records.columns:
+                    null_count = int(records[col].isna().sum())
+                else:
+                    null_count = n
+                result[col] = round(null_count / n, 6)
+            return result
+    except ImportError:
+        pass
+    # Sequence[RocketRecord] path
     n = len(records)
     if n == 0:
         return {col: 1.0 for col in columns}
-    result: Dict[str, float] = {}
+    result = {}
     for col in columns:
         null_count = sum(1 for r in records if getattr(r, col, None) is None)
         result[col] = round(null_count / n, 6)
@@ -800,6 +840,184 @@ def _compute_data_quality_score(record: "RocketRecord") -> float:
 
 
 # ---------------------------------------------------------------------------
+# Module-level report writer
+# ---------------------------------------------------------------------------
+
+
+def _write_report(
+    path: Path,
+    records: List[RocketRecord],
+    exportable: List[RocketRecord],
+    rejected: List[RocketRecord],
+    df: "pd.DataFrame",
+    tier_counts: Dict[str, int],
+    dq_counts: Dict[str, int],
+    rej_reasons: Dict[str, int],
+    null_rates: Dict[str, float],
+    fetch_stats: Dict[str, int],
+    proxy_rows: int,
+    dedup_records: List[RocketRecord],
+    non_manifest: List[str],
+    dataset_version: str,
+    builder_version: str,
+    created_at: datetime,
+    elapsed: float,
+) -> None:
+    n_exp = len(exportable)
+    n_ing = len(records)
+
+    def _pct(n: int, total: int) -> str:
+        return f"{n / max(total, 1) * 100:.1f}%"
+
+    lines: List[str] = [
+        "# Rocket Dataset Report",
+        "",
+        "## Run Metadata",
+        "| Field | Value |",
+        "|---|---|",
+        f"| dataset_version | `{dataset_version}` |",
+        f"| builder_version | `{builder_version}` |",
+        f"| created_at | {created_at.isoformat()} |",
+        f"| elapsed_seconds | {elapsed:.1f} |",
+        "",
+        "## Row Counts",
+        "| Source | Ingested | Exported | Rejected |",
+        "|---|---|---|---|",
+    ]
+
+    # Per-source counts
+    by_source: Dict[str, Dict[str, int]] = {}
+    for rec in records:
+        s = rec.source_type
+        if s not in by_source:
+            by_source[s] = {"ing": 0, "exp": 0, "rej": 0}
+        by_source[s]["ing"] += 1
+        if rec.rejection_reason:
+            by_source[s]["rej"] += 1
+    exp_ids = {r.row_id for r in exportable}
+    for rec in exportable:
+        by_source.setdefault(rec.source_type, {"ing": 0, "exp": 0, "rej": 0})
+        by_source[rec.source_type]["exp"] += 1
+
+    for src, cnts in sorted(by_source.items()):
+        lines.append(f"| {src} | {cnts['ing']} | {cnts['exp']} | {cnts['rej']} |")
+    lines += [
+        f"| **TOTAL** | **{n_ing}** | **{n_exp}** | **{len(rejected)}** |",
+        "",
+        "## Rejection Summary",
+        "| Reason | Count | % of Ingested |",
+        "|---|---|---|",
+    ]
+    for reason, cnt in sorted(rej_reasons.items(), key=lambda x: -x[1]):
+        lines.append(f"| {reason} | {cnt} | {_pct(cnt, n_ing)} |")
+
+    lines += [
+        "",
+        "## Duplicate Summary",
+        "| Kept Source | Dropped Source | Dedup Reason | Count |",
+        "|---|---|---|---|",
+    ]
+    dedup_summary: Dict[Tuple[str, str, str], int] = {}
+    for rec in dedup_records:
+        key = (
+            rec.kept_source_type or "",
+            rec.dropped_source_type or "",
+            rec.dedup_reason or "",
+        )
+        dedup_summary[key] = dedup_summary.get(key, 0) + 1
+    for (kept, dropped, reason), cnt in sorted(dedup_summary.items()):
+        lines.append(f"| {kept} | {dropped} | {reason} | {cnt} |")
+
+    lines += [
+        "",
+        "## Pricing & Enrichment",
+        "| Metric | Value |",
+        "|---|---|",
+        f"| fetched | {fetch_stats.get('fetched', 0)} |",
+        f"| unavailable | {fetch_stats.get('unavailable', 0)} |",
+    ]
+    outcome_src_counts = _count_values(exportable, "outcome_source")
+    for src, cnt in sorted(outcome_src_counts.items()):
+        lines.append(f"| outcome_source={src} | {cnt} |")
+
+    lines += [
+        "",
+        "## Runner Tier Distribution",
+        "| Tier | Count | % |",
+        "|---|---|---|",
+    ]
+    for tier in sorted(RUNNER_TIERS) + ["null"]:
+        cnt = tier_counts.get(tier, 0)
+        lines.append(f"| {tier} | {cnt} | {_pct(cnt, n_exp)} |")
+
+    lines += [
+        "",
+        "## Drawdown Quality Distribution",
+        "",
+        f"> ⚠️ `daily_proxy` rows ({proxy_rows}) carry lower-confidence CLEAN/DIRTY labels "
+        f"derived from daily-bar lows. Do not treat them as equivalent to `intraday_exact` rows.",
+        "",
+        "| Quality | Count | % |",
+        "|---|---|---|",
+    ]
+    for q in sorted(DRAWDOWN_QUAL) + ["null"]:
+        cnt = dq_counts.get(q, 0)
+        lines.append(f"| {q} | {cnt} | {_pct(cnt, n_exp)} |")
+    lines.append(f"| _(daily_proxy rows)_ | {proxy_rows} | {_pct(proxy_rows, n_exp)} |")
+
+    lines += [
+        "",
+        "## Feature Null Rates",
+        "| Feature Column | Null % |",
+        "|---|---|",
+    ]
+    for col, rate in sorted(null_rates.items(), key=lambda x: -x[1]):
+        lines.append(f"| {col} | {rate * 100:.1f}% |")
+
+    # Segmentation helpers
+    def _seg(col: str, label: str) -> List[str]:
+        seg: List[str] = ["", f"### By {label}", f"| {label} | Count | % |", "|---|---|---|"]
+        if col in df.columns:
+            for val, cnt in df[col].value_counts(dropna=False).items():
+                seg.append(f"| {val} | {cnt} | {_pct(int(cnt), n_exp)} |")
+        return seg
+
+    lines += ["", "## Segmentation Breakdowns"]
+    lines += _seg("catalyst_category", "Catalyst Category")
+    lines += _seg("float_category",    "Float Bucket")
+    lines += _seg("market_cap_category", "Market Cap Bucket")
+
+    # Price bucket segmentation
+    lines += ["", "### By Price Bucket", "| Price Bucket | Count | % |", "|---|---|---|"]
+    if "price_at_alert" in df.columns:
+        import pandas as _pd
+        prices = _pd.to_numeric(df["price_at_alert"], errors="coerce")
+        buckets = _pd.cut(
+            prices,
+            bins=[0, 1, 5, 10, float("inf")],
+            labels=["<$1", "$1–5", "$5–10", ">$10"],
+        )
+        for label_, cnt in buckets.value_counts(sort=False).items():
+            lines.append(f"| {label_} | {cnt} | {_pct(int(cnt), n_exp)} |")
+
+    lines += [
+        "",
+        "## Dropped Non-Manifest Columns",
+        "The following `RocketRecord` fields exist on the model but are not exported "
+        "(they are neither in `FEATURE_COLUMNS` nor `LABEL_COLUMNS`).",
+        "",
+        "| Column | Reason |",
+        "|---|---|",
+    ]
+    for col in non_manifest:
+        lines.append(f"| {col} | not in FEATURE_COLUMNS or LABEL_COLUMNS |")
+    if not non_manifest:
+        lines.append("| _(none)_ | — |")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # RocketDatasetBuilder
 # ---------------------------------------------------------------------------
 
@@ -1089,3 +1307,128 @@ class RocketDatasetBuilder:
         except Exception as exc:
             logger.debug("Enrichment: daily fetch failed %s: %s", ticker, exc)
         return intraday, daily
+
+    # ── Stage 4: Assembly ─────────────────────────────────────────────────
+
+    def _assemble(
+        self, records: List[RocketRecord], elapsed: float = 0.0
+    ) -> "BuildSummary":
+        """Apply leakage manifest, export CSV/Parquet/rejected, write report."""
+        created_at = datetime.now(timezone.utc)
+
+        # Detect non-manifest columns (report but do not export)
+        all_fields   = set(RocketRecord.model_fields.keys())
+        manifest     = set(_EXPORT_COLUMNS)
+        # Internal/pipeline fields excluded by design — not counted as "dropped"
+        _INTERNAL = {
+            "rejection_reason", "intraday_bars", "daily_bars",
+            "stored_mfe_pct", "stored_mae_pct",
+            "stored_return_next_day_high_pct", "stored_return_two_day_high_pct",
+            "stored_return_five_day_high_pct", "stored_return_15m_pct",
+            "stored_return_1h_pct", "stored_return_4h_pct",
+            "duplicate_of", "dropped_source_type", "kept_source_type", "dedup_reason",
+        }
+        non_manifest = sorted(all_fields - manifest - _INTERNAL)
+
+        valid    = [r for r in records if not r.rejection_reason]
+        rejected = [r for r in records if r.rejection_reason]
+
+        # Only export rows that have at least one label populated
+        exportable = [
+            r for r in valid
+            if any(getattr(r, c, None) is not None for c in LABEL_COLUMNS)
+        ]
+
+        # Build DataFrame using only manifest columns
+        rows = [
+            {c: getattr(rec, c, None) for c in _EXPORT_COLUMNS}
+            for rec in exportable
+        ]
+        df = (
+            pd.DataFrame(rows, columns=_EXPORT_COLUMNS)
+            if rows
+            else pd.DataFrame(columns=_EXPORT_COLUMNS)
+        )
+
+        # Write outputs
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.docs_dir.mkdir(parents=True, exist_ok=True)
+
+        csv_path      = self.data_dir / "rocket_training_dataset.csv"
+        parquet_path  = self.data_dir / "rocket_training_dataset.parquet"
+        rejected_path = self.data_dir / "rocket_rejected_rows.csv"
+        report_path   = self.docs_dir / "rocket_dataset_report.md"
+
+        df.to_csv(str(csv_path), index=False)
+        df.to_parquet(str(parquet_path), compression="snappy", index=False)
+
+        rej_rows = [
+            {
+                "row_id":           r.row_id,
+                "source_type":      r.source_type,
+                "ticker":           r.ticker,
+                "rejection_reason": r.rejection_reason,
+            }
+            for r in rejected
+        ]
+        pd.DataFrame(rej_rows).to_csv(str(rejected_path), index=False)
+
+        # Compute stats for BuildSummary and report
+        tier_counts = _count_values(exportable, "runner_tier")
+        dq_counts   = _count_values(exportable, "drawdown_quality")
+        rej_reasons = _count_values(rejected,   "rejection_reason")
+        null_rates  = _null_rates(df, FEATURE_COLUMNS)
+        proxy_rows  = sum(1 for r in exportable if r.drawdown_data_quality == "daily_proxy")
+        dedup_recs  = [r for r in records if r.dedup_reason]
+
+        # Pricing fetch stats: count outcome_source distribution
+        fetch_stats: Dict[str, int] = {"fetched": 0, "unavailable": 0}
+        for rec in exportable:
+            if rec.outcome_source in ("bars", "daily_proxy"):
+                fetch_stats["fetched"] += 1
+            elif rec.outcome_source == "missing":
+                fetch_stats["unavailable"] += 1
+
+        _write_report(
+            path=report_path,
+            records=records,
+            exportable=exportable,
+            rejected=rejected,
+            df=df,
+            tier_counts=tier_counts,
+            dq_counts=dq_counts,
+            rej_reasons=rej_reasons,
+            null_rates=null_rates,
+            fetch_stats=fetch_stats,
+            proxy_rows=proxy_rows,
+            dedup_records=dedup_recs,
+            non_manifest=non_manifest,
+            dataset_version=DATASET_VERSION,
+            builder_version=BUILDER_VERSION,
+            created_at=created_at,
+            elapsed=elapsed,
+        )
+
+        logger.info(
+            "Assembled: ingested=%d exported=%d rejected=%d",
+            len(records), len(exportable), len(rejected),
+        )
+
+        return BuildSummary(
+            total_ingested=len(records),
+            total_rejected=len(rejected),
+            total_exported=len(exportable),
+            runner_tier_counts=tier_counts,
+            drawdown_quality_counts=dq_counts,
+            null_rate_by_feature=null_rates,
+            rejection_reasons=rej_reasons,
+            output_paths={
+                "csv":     str(csv_path),
+                "parquet": str(parquet_path),
+                "report":  str(report_path),
+            },
+            pricing_fetch_stats=fetch_stats,
+            dataset_version=DATASET_VERSION,
+            builder_version=BUILDER_VERSION,
+            created_at=created_at,
+        )

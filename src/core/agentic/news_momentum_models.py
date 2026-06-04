@@ -941,6 +941,7 @@ class NewsMomentumConfig(BaseModel):
     # first-mover) bypass — those signals carry their own confirmation.
     chase_spike_max_move_pct: float = 75.0
     late_chase_block_move_pct: float = 75.0
+    high_conviction_late_chase_max_age_seconds: int = 900
     daily_standard_alert_cap_per_ticker: int = 1
 
     # Multi-source confirmation for cheap stocks: sub-$2 names are heavily

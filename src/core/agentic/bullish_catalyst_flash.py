@@ -76,11 +76,20 @@ def assess_bullish_flash(
         return BullishFlashAssessment(False, block_reason="negative_classification")
 
     now = now or datetime.now(timezone.utc)
+    published = candidate.published_at
     detected = candidate.detected_at
+    if published is None:
+        return BullishFlashAssessment(False, block_reason="missing_published_at")
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=timezone.utc)
     if detected.tzinfo is None:
         detected = detected.replace(tzinfo=timezone.utc)
     max_age = float(getattr(config, "bullish_flash_max_age_seconds", 180))
-    if (now - detected).total_seconds() > max_age:
+    published_age = (now - published).total_seconds()
+    detected_age = (now - detected).total_seconds()
+    if published_age < 0 or detected_age < 0:
+        return BullishFlashAssessment(False, block_reason="future_flash_candidate")
+    if published_age > max_age or detected_age > max_age:
         return BullishFlashAssessment(False, block_reason="stale_flash_candidate")
 
     if (candidate.trap_risk or 0.0) >= float(getattr(config, "high_trap_block_threshold", 70.0)):

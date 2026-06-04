@@ -1985,21 +1985,34 @@ class NewsMomentumOrchestrator:
         # arriving after the bulk of the move and entries are usually traps.
         # Only fresh/strong catalyst paths bypass this. A breakout by itself can
         # still be too late to chase after the move is already extended.
-        is_confirmed_rocket_for_chase = first_mover or bullish_flash or high_conviction
+        late_chase_cap = min(self.config.chase_spike_max_move_pct, self.config.late_chase_block_move_pct)
+        high_conviction_recent = (
+            high_conviction
+            and published_age_secs is not None
+            and detected_age_secs is not None
+            and 0 <= published_age_secs <= self.config.high_conviction_late_chase_max_age_seconds
+            and 0 <= detected_age_secs <= self.config.high_conviction_late_chase_max_age_seconds
+        )
+        is_early_enough_for_chase = (
+            first_mover
+            or bullish_flash
+            or (high_conviction_recent and (c.move_pct is None or c.move_pct <= late_chase_cap))
+        )
         if (
-            not is_confirmed_rocket_for_chase
+            not is_early_enough_for_chase
             and c.move_pct is not None
-            and c.move_pct > min(self.config.chase_spike_max_move_pct, self.config.late_chase_block_move_pct)
+            and c.move_pct > late_chase_cap
         ):
             logger.info(
                 "Telegram gate: %s late-chase suppressed (move=%.1f%% > cap=%.1f%%)",
-                c.ticker, c.move_pct, min(self.config.chase_spike_max_move_pct, self.config.late_chase_block_move_pct),
+                c.ticker, c.move_pct, late_chase_cap,
             )
             c._block_reason = f"late_chase({c.move_pct:.1f}%)"  # type: ignore[attr-defined]
             return False
 
         daily_cap = int(getattr(self.config, "daily_standard_alert_cap_per_ticker", 1) or 0)
-        if daily_cap > 0 and not (first_mover or bullish_flash or high_conviction):
+        daily_cap_bypass = first_mover or bullish_flash or high_conviction_recent
+        if daily_cap > 0 and not daily_cap_bypass:
             sent_today = self._sent_alerts_today_for_ticker(c.ticker, now)
             if sent_today >= daily_cap:
                 logger.info(
@@ -2415,6 +2428,20 @@ class NewsMomentumOrchestrator:
                     )
                 logger.info("NewsMomentum: Telegram alert sent for %s", c.ticker)
             else:
+                now_ts = datetime.now(timezone.utc)
+                self._alert_cooldown[c.ticker] = now_ts
+                headline_key = f"{c.ticker}:{self._headline_hash(c.headline)}"
+                self._headline_alert_cooldown[headline_key] = now_ts
+                try:
+                    self._save_cooldowns()
+                    self._save_headline_cooldowns()
+                    self._save_candidates()
+                except Exception as persist_exc:
+                    logger.debug(
+                        "NewsMomentum: delivery-pending cooldown persistence failed for %s: %s",
+                        c.ticker,
+                        persist_exc,
+                    )
                 try:
                     self._shadow_logger.log_candidate(
                         c,

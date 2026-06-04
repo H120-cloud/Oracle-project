@@ -87,6 +87,29 @@ def test_stale_bullish_headline_does_not_flash():
     assert assessment.block_reason == "stale_flash_candidate"
 
 
+def test_old_published_headline_detected_now_does_not_flash():
+    now = datetime.now(timezone.utc)
+    c = _candidate(
+        published_at=now - timedelta(hours=2),
+        detected_at=now - timedelta(seconds=30),
+    )
+
+    assessment = assess_bullish_flash(c, NewsMomentumConfig())
+
+    assert assessment.should_flash is False
+    assert assessment.block_reason == "stale_flash_candidate"
+
+
+def test_missing_published_at_does_not_flash():
+    c = _candidate()
+    c.published_at = None
+
+    assessment = assess_bullish_flash(c, NewsMomentumConfig())
+
+    assert assessment.should_flash is False
+    assert assessment.block_reason == "missing_published_at"
+
+
 def test_orchestrator_allows_flash_past_slow_score_and_small_move_gates(monkeypatch):
     from src.core.agentic.news_momentum_orchestrator import NewsMomentumOrchestrator
 

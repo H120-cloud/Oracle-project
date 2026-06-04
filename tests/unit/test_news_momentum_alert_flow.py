@@ -178,6 +178,47 @@ def test_send_telegram_success_survives_learning_record_failure(monkeypatch):
     assert "SPRC" in orch._alert_cooldown
 
 
+def test_send_telegram_failure_sets_delivery_pending_cooldown(monkeypatch):
+    orch = object.__new__(NewsMomentumOrchestrator)
+    orch._alert_cooldown = {}
+    orch._headline_alert_cooldown = {}
+    orch._telegram_learning = type(
+        "TelegramLearning",
+        (),
+        {"record_alert": lambda self, record: None},
+    )()
+    orch._shadow_logger = type(
+        "ShadowLogger",
+        (),
+        {
+            "log_candidate": lambda self, *args, **kwargs: None,
+            "flush": lambda self: None,
+        },
+    )()
+
+    async def send_false(*args, **kwargs):
+        return False
+
+    saved = []
+    monkeypatch.setattr(orch, "_format_telegram_message", lambda candidate: "alert")
+    monkeypatch.setattr(orch, "_headline_hash", lambda headline: "hash")
+    monkeypatch.setattr(orch, "_save_cooldowns", lambda: saved.append("ticker"))
+    monkeypatch.setattr(orch, "_save_headline_cooldowns", lambda: saved.append("headline"))
+    monkeypatch.setattr(orch, "_save_candidates", lambda: saved.append("candidates"))
+    monkeypatch.setattr(
+        "src.core.agentic.news_momentum_orchestrator.send_telegram_alert",
+        send_false,
+    )
+
+    candidate = _candidate("PEND")
+
+    assert asyncio.run(orch._send_telegram_alert(candidate)) is False
+    assert candidate.telegram_sent is False
+    assert "PEND" in orch._alert_cooldown
+    assert "PEND:hash" in orch._headline_alert_cooldown
+    assert saved == ["ticker", "headline", "candidates"]
+
+
 def test_process_event_existing_ticker_refreshes_without_name_error(monkeypatch):
     orch = object.__new__(NewsMomentumOrchestrator)
     existing = _candidate("SPRC")
@@ -359,6 +400,45 @@ def test_gate_allows_olox_style_borderline_acquisition_score(monkeypatch):
     candidate.expected_return_score = 49.9
     candidate.continuation_probability = 50.0
     candidate.detected_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+    assert orch._should_send_telegram(candidate, adaptive={}) is True
+
+
+def test_gate_blocks_stale_high_conviction_after_spike(monkeypatch):
+    orch = _gate_orchestrator(monkeypatch)
+    now = datetime.now(timezone.utc)
+    candidate = _candidate("CHASE")
+    candidate.headline = "CHASE announces Phase 2 data after stock already ran"
+    candidate.catalyst_category = CatalystCategory.BIOTECH
+    candidate.catalyst_sub_type = CatalystSubType.PHASE_2
+    candidate.current_price = 12.00
+    candidate.prior_price = 5.00
+    candidate.move_pct = 140.0
+    candidate.news_impact_score = 85.0
+    candidate.expected_return_score = 85.0
+    candidate.continuation_probability = 85.0
+    candidate.published_at = now - timedelta(hours=2)
+    candidate.detected_at = now - timedelta(hours=2)
+
+    assert orch._should_send_telegram(candidate, adaptive={}) is False
+    assert getattr(candidate, "_block_reason", "") == "late_chase(140.0%)"
+
+
+def test_gate_allows_recent_high_conviction_before_late_chase(monkeypatch):
+    orch = _gate_orchestrator(monkeypatch)
+    now = datetime.now(timezone.utc)
+    candidate = _candidate("EARLY")
+    candidate.headline = "EARLY announces Phase 2 data before the move extends"
+    candidate.catalyst_category = CatalystCategory.BIOTECH
+    candidate.catalyst_sub_type = CatalystSubType.PHASE_2
+    candidate.current_price = 5.20
+    candidate.prior_price = 5.00
+    candidate.move_pct = 4.0
+    candidate.news_impact_score = 85.0
+    candidate.expected_return_score = 85.0
+    candidate.continuation_probability = 85.0
+    candidate.published_at = now - timedelta(minutes=3)
+    candidate.detected_at = now - timedelta(minutes=2)
 
     assert orch._should_send_telegram(candidate, adaptive={}) is True
 

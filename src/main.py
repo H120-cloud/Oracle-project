@@ -232,11 +232,25 @@ async def _pre_news_scan_loop():
             for anomaly in anomalies:
                 if detector.should_alert(anomaly):
                     msg = detector.format_alert(anomaly)
-                    sent = await send_telegram_alert(msg, parse_mode="HTML")
+                    alert_id = f"pre_news:{anomaly.ticker}:{anomaly.detected_at.isoformat()}"
+                    sent = await send_telegram_alert(
+                        msg,
+                        parse_mode="HTML",
+                        alert_id=alert_id,
+                        ticker=anomaly.ticker,
+                        alert_type="pre_news",
+                        priority=3,
+                    )
+                    detector.mark_alert_sent(anomaly.ticker)
                     if sent:
-                        detector.mark_alert_sent(anomaly.ticker)
                         logger.info("PreNews Telegram alert sent for %s (score=%s)", anomaly.ticker, anomaly.pre_news_suspicion_score)
                         validation_tracker.record_alert(anomaly.ticker)
+                    else:
+                        logger.warning(
+                            "PreNews Telegram alert queued/pending for %s (score=%s)",
+                            anomaly.ticker,
+                            anomaly.pre_news_suspicion_score,
+                        )
 
             # ── V2: Agentic handoff via centralized orchestrator method ────
             from src.core.agentic.orchestrator import AgenticOrchestrator
@@ -265,11 +279,23 @@ async def _pre_news_scan_loop():
                         f"Suspicion score: {anomaly.pre_news_suspicion_score:.0f}\n"
                         f"<i>{headline[:200]}</i>"
                     )
-                    sent = await send_telegram_alert(msg)
+                    alert_id = f"pre_news_confirmed:{anomaly.ticker}:{(anomaly.news_confirmed_at or anomaly.detected_at).isoformat()}"
+                    sent = await send_telegram_alert(
+                        msg,
+                        alert_id=alert_id,
+                        ticker=anomaly.ticker,
+                        alert_type="pre_news_confirmed",
+                        priority=4,
+                    )
+                    detector.mark_news_confirmed_alert_sent(anomaly.ticker)
                     if sent:
-                        detector.mark_news_confirmed_alert_sent(anomaly.ticker)
                         logger.info(
                             "PreNews news-confirmation alert sent for %s", anomaly.ticker
+                        )
+                    else:
+                        logger.warning(
+                            "PreNews news-confirmation alert queued/pending for %s",
+                            anomaly.ticker,
                         )
                 except Exception as exc:
                     logger.warning(

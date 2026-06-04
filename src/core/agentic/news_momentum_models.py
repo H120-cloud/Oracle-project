@@ -30,6 +30,20 @@ def _aware_utc_datetime(value):
     return value
 
 
+def _whole_number_int(value):
+    if value is None:
+        return value
+    if isinstance(value, bool):
+        return value
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    if number.is_integer():
+        return int(number)
+    return value
+
+
 # ── Enums ────────────────────────────────────────────────────────────────────
 
 
@@ -224,6 +238,11 @@ class NewsVelocity(BaseModel):
     def _normalize_first_detected_at(cls, value):
         return _aware_utc_datetime(value)
 
+    @field_validator("source_count", mode="before")
+    @classmethod
+    def _normalize_int_fields(cls, value):
+        return _whole_number_int(value)
+
 
 class NewsEvent(BaseModel):
     """A detected news headline with metadata."""
@@ -262,6 +281,11 @@ class PriceSnapshot(BaseModel):
     def _normalize_timestamp(cls, value):
         return _aware_utc_datetime(value)
 
+    @field_validator("volume", mode="before")
+    @classmethod
+    def _normalize_volume(cls, value):
+        return _whole_number_int(value)
+
 
 class NewsReactionMetrics(BaseModel):
     """Price and volume reaction to a news event."""
@@ -281,6 +305,11 @@ class NewsReactionMetrics(BaseModel):
     higher_lows: bool = False
     consolidation_quality: Optional[float] = None   # 0-100
     breakout_quality: Optional[float] = None        # 0-100
+
+    @field_validator("volume_before", "volume_after", "halt_count", mode="before")
+    @classmethod
+    def _normalize_int_fields(cls, value):
+        return _whole_number_int(value)
 
 
 class NewsImpactScore(BaseModel):
@@ -464,6 +493,11 @@ class TelegramAlertRecord(BaseModel):
     was_blocked: bool = False
     block_reason: Optional[str] = None
 
+    @field_validator("volume_at_alert", "sources_seen_count", mode="before")
+    @classmethod
+    def _normalize_int_fields(cls, value):
+        return _whole_number_int(value)
+
 
 class TelegramAlertQuality(BaseModel):
     """Aggregate quality metrics for Telegram alerts."""
@@ -479,6 +513,20 @@ class TelegramAlertQuality(BaseModel):
     quality_score: float = 0.0  # 0-100
     by_catalyst_type: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
+    @field_validator(
+        "total_alerts",
+        "great_alerts",
+        "good_alerts",
+        "late_alerts",
+        "trap_alerts",
+        "no_follow_through",
+        "missed_runners",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_int_fields(cls, value):
+        return _whole_number_int(value)
+
 
 class CatalystLearningStats(BaseModel):
     """Learning statistics for a catalyst type."""
@@ -492,6 +540,11 @@ class CatalystLearningStats(BaseModel):
     best_time_of_day: Optional[str] = None
     best_session: Optional[str] = None
     telegram_alert_quality: Optional[float] = None
+
+    @field_validator("total_occurrences", mode="before")
+    @classmethod
+    def _normalize_total_occurrences(cls, value):
+        return _whole_number_int(value)
 
 
 # ── Main Candidate Model ───────────────────────────────────────────────────
@@ -591,6 +644,11 @@ class NewsMomentumCandidate(BaseModel):
     def _normalize_datetimes(cls, value):
         return _aware_utc_datetime(value)
 
+    @field_validator("volume", "rank", "sources_seen_count", mode="before")
+    @classmethod
+    def _normalize_int_fields(cls, value):
+        return _whole_number_int(value)
+
 
 class MissedWinnerReason(str, Enum):
     """Why Oracle missed a positive catalyst."""
@@ -656,6 +714,11 @@ class MissedWinnerRecord(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     resolved_at: Optional[datetime] = None
 
+    @field_validator("similar_historical_winners", mode="before")
+    @classmethod
+    def _normalize_int_fields(cls, value):
+        return _whole_number_int(value)
+
 
 class MissedWinnerLearningReport(BaseModel):
     """Summary report of missed winner learning."""
@@ -670,6 +733,18 @@ class MissedWinnerLearningReport(BaseModel):
     shadow_adjustments_active: int = 0
     top_missed_movers: List[Dict] = Field(default_factory=list)
     recent_missed: List[MissedWinnerRecord] = Field(default_factory=list)
+
+    @field_validator(
+        "total_missed",
+        "total_detected",
+        "recommendations_pending",
+        "recommendations_applied",
+        "shadow_adjustments_active",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_int_fields(cls, value):
+        return _whole_number_int(value)
 
 
 class NewsMomentumConfig(BaseModel):

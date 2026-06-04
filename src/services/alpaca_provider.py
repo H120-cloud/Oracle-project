@@ -581,5 +581,8 @@ class AlpacaProvider(IMarketDataProvider):
                 "afterhours": afterhours,
             }
         except Exception as e:
+            if "no snapshot found" in str(e).lower():
+                logger.debug("Alpaca snapshot unavailable for %s: %s", ticker, e)
+                return {"price": 0, "error": "No snapshot available"}
             logger.error("get_live_quote [%s] Alpaca failed: %s", ticker, e)
             return {"price": 0, "error": str(e)}

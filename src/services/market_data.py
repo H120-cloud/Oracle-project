@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 # ── Rate Limiting ──────────────────────────────────────────────────────────
 # Global semaphore: max 2 concurrent yfinance requests to avoid 429s
 _QUOTE_SEMAPHORE = threading.Semaphore(2)
+_PROVIDER_CACHE: dict[str, object] = {}
+_PROVIDER_CACHE_LOCK = threading.Lock()
 
 # Global rate-limit backoff state
 _rate_limit_backoff_until = 0.0  # timestamp when we can resume
@@ -893,48 +895,59 @@ def get_market_data_provider() -> IMarketDataProvider:
     """
     import os
     provider = os.getenv("MARKET_DATA_PROVIDER", "yfinance").lower()
+    cache_key = provider
+
+    with _PROVIDER_CACHE_LOCK:
+        cached = _PROVIDER_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    def _cache(instance: IMarketDataProvider) -> IMarketDataProvider:
+        with _PROVIDER_CACHE_LOCK:
+            _PROVIDER_CACHE[cache_key] = instance
+        return instance
 
     if provider == "finnhub":
         try:
-            return FinnhubProvider()
+            return _cache(FinnhubProvider())
         except Exception as exc:
             logger.warning(
                 "FinnhubProvider failed to initialize: %s. "
                 "Falling back to YFinanceProvider.", exc
             )
-            return YFinanceProvider()
+            return _cache(YFinanceProvider())
 
     if provider == "alpaca":
         try:
             from src.services.alpaca_provider import AlpacaProvider
-            return AlpacaProvider()
+            return _cache(AlpacaProvider())
         except Exception as exc:
             logger.warning(
                 "AlpacaProvider failed to initialize: %s. "
                 "Falling back to YFinanceProvider.", exc
             )
-            return YFinanceProvider()
+            return _cache(YFinanceProvider())
 
     if provider == "polygon":
         try:
             from src.services.polygon_provider import PolygonProvider
-            return PolygonProvider()
+            return _cache(PolygonProvider())
         except Exception as exc:
             logger.warning(
                 "PolygonProvider failed to initialize: %s. "
                 "Falling back to YFinanceProvider.", exc
             )
-            return YFinanceProvider()
+            return _cache(YFinanceProvider())
 
     if provider == "alphavantage":
         try:
             from src.services.alphavantage_provider import AlphaVantageProvider
-            return AlphaVantageProvider()
+            return _cache(AlphaVantageProvider())
         except Exception as exc:
             logger.warning(
                 "AlphaVantageProvider failed to initialize: %s. "
                 "Falling back to YFinanceProvider.", exc
             )
-            return YFinanceProvider()
+            return _cache(YFinanceProvider())
 
-    return YFinanceProvider()
+    return _cache(YFinanceProvider())

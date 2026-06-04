@@ -242,7 +242,7 @@ class RegimeAwareBacktester:
                 
                 # Check stop loss
                 if current_bar.low <= stop:
-                    pnl_pct = ((stop - entry_price) / entry_price) * 100
+                    pnl_pct = ((stop - entry_price) / entry_price) * 100 if entry_price else 0
                     
                     # Record trade with regime info from entry signal
                     self._record_trade(
@@ -255,7 +255,7 @@ class RegimeAwareBacktester:
                 
                 # Check target
                 if current_bar.high >= target:
-                    pnl_pct = ((target - entry_price) / entry_price) * 100
+                    pnl_pct = ((target - entry_price) / entry_price) * 100 if entry_price else 0
                     
                     self._record_trade(
                         result, entry_signal, entry_date, str(current_bar.timestamp),
@@ -298,7 +298,7 @@ class RegimeAwareBacktester:
         if position:
             entry_price, entry_date, _, _, entry_signal = position
             last_price = bars[-1].close
-            pnl_pct = ((last_price - entry_price) / entry_price) * 100
+            pnl_pct = ((last_price - entry_price) / entry_price) * 100 if entry_price else 0
             
             self._record_trade(
                 result, entry_signal, entry_date, str(bars[-1].timestamp),

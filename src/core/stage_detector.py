@@ -48,7 +48,7 @@ class StageDetector:
         ema50 = self._ema(closes, min(50, len(closes)))
 
         # Distance from intraday high
-        dist_from_high = ((intraday_high - current) / intraday_high) * 100
+        dist_from_high = ((intraday_high - current) / intraday_high) * 100 if intraday_high else 0.0
 
         # EMA structure
         above_ema9 = current > ema9
@@ -64,7 +64,7 @@ class StageDetector:
         vol_ratio = vol_recent / vol_prior if vol_prior > 0 else 1.0
 
         # Rate of change (10 bars)
-        roc = ((current - float(closes[-11])) / float(closes[-11])) * 100 if len(closes) > 11 else 0
+        roc = ((current - float(closes[-11])) / float(closes[-11])) * 100 if len(closes) > 11 and closes[-11] != 0 else 0
 
         # ── Stage classification ─────────────────────────────────────────
 

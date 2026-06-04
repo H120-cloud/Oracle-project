@@ -1,10 +1,20 @@
 import uuid
 from datetime import datetime
+from datetime import timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from src.models.database import Signal, SignalOutcome, ScanResult, Watchlist, WatchlistAlert, WatchlistTimeline, TradeLog, CustomAlert
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now (replaces deprecated datetime.now(timezone.utc).replace(tzinfo=None)).
+
+    Returns a naive UTC datetime to remain compatible with existing
+    SQLAlchemy DateTime columns that store naive timestamps.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class SignalRepository:
@@ -29,7 +39,7 @@ class SignalRepository:
         )
 
     def get_active(self) -> list[Signal]:
-        now = datetime.utcnow()
+        now = _utcnow()
         return (
             self.db.query(Signal)
             .filter(Signal.expired_at.is_(None) | (Signal.signal_expiry > now))
@@ -106,9 +116,9 @@ class WatchlistRepository:
         if not item:
             return None
         for key, value in kwargs.items():
-            if value is not None and hasattr(item, key):
+            if key != "id" and hasattr(item, key):
                 setattr(item, key, value)
-        item.updated_at = datetime.utcnow()
+        item.updated_at = _utcnow()
         self.db.commit()
         self.db.refresh(item)
         self._add_timeline(item.id, "updated", f"{ticker.upper()} watchlist entry updated", {
@@ -130,7 +140,7 @@ class WatchlistRepository:
             return None
         item.status = "archived"
         item.active = False
-        item.archived_at = datetime.utcnow()
+        item.archived_at = _utcnow()
         item.archive_reason = reason
         self.db.commit()
         self.db.refresh(item)
@@ -169,10 +179,12 @@ class WatchlistRepository:
         if not item:
             return None
         for key, value in metrics.items():
+            if value is None:
+                continue
             col = f"latest_{key}" if not key.startswith("latest_") else key
             if hasattr(item, col):
                 setattr(item, col, value)
-        item.metrics_updated_at = datetime.utcnow()
+        item.metrics_updated_at = _utcnow()
         self.db.commit()
         self.db.refresh(item)
         return item
@@ -193,7 +205,7 @@ class WatchlistRepository:
         item = self.get_by_id(watchlist_id)
         if item:
             item.latest_alert = f"{alert_type}: {message[:80]}"
-            item.latest_alert_at = datetime.utcnow()
+            item.latest_alert_at = _utcnow()
             item.alert_count = (item.alert_count or 0) + 1
         self.db.commit()
         self.db.refresh(alert)
@@ -306,7 +318,7 @@ class CustomAlertRepository:
         alert = self.db.query(CustomAlert).filter(CustomAlert.id == alert_id).first()
         if alert:
             alert.is_active = False
-            alert.triggered_at = datetime.utcnow()
+            alert.triggered_at = _utcnow()
             alert.triggered_price = triggered_price
             self.db.commit()
             return True

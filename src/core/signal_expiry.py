@@ -9,7 +9,7 @@ Determines if a signal should be expired based on:
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from src.models.schemas import (
@@ -38,7 +38,7 @@ class SignalExpiryChecker:
         """
         Return an ExpiryReason if the signal should be expired, else None.
         """
-        now = now or datetime.utcnow()
+        now = now or datetime.now(timezone.utc).replace(tzinfo=None)
 
         # 1. Time expiry
         if signal.signal_expiry and now >= signal.signal_expiry:

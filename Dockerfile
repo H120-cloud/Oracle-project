@@ -3,7 +3,7 @@ FROM node:20-alpine AS frontend-build
 
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install --frozen-lockfile 2>/dev/null || npm install
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY frontend/ .
 RUN npx vite build
 
@@ -23,7 +23,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 COPY --from=frontend-build /frontend/dist /app/frontend/dist
 
-ENV PORT=8000
-EXPOSE ${PORT}
+EXPOSE 8000
 
-CMD uvicorn src.main:app --host 0.0.0.0 --port ${PORT}
+CMD sh -c "uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8000}"

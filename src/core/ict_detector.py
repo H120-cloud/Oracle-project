@@ -345,7 +345,7 @@ class ICTDetector:
 
             candle_range = abs(float(closes[i]) - float(opens[i]))
             mid_price = (float(highs[i]) + float(lows[i])) / 2
-            impulse_pct = (candle_range / mid_price) * 100
+            impulse_pct = (candle_range / mid_price) * 100 if mid_price else 0
 
             if impulse_pct > max_impulse_pct and impulse_pct > self.IMPULSE_THRESHOLD_PCT:
                 max_impulse_pct = impulse_pct

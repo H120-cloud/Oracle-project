@@ -122,9 +122,9 @@ class BearishDetector:
 
     def _support(self, price, lows, vp, vwap, ema9, ema20):
         r = {"vwap_lost": False, "ema9_lost": False, "ema20_lost": False, "poc_lost": False, "val_lost": False, "support_lost": False}
-        if ((price - vwap) / vwap) * 100 < -self.vwap_thr: r["vwap_lost"] = r["support_lost"] = True
-        if ((price - ema9) / ema9) * 100 < -self.ema_thr: r["ema9_lost"] = r["support_lost"] = True
-        if ((price - ema20) / ema20) * 100 < -self.ema_thr: r["ema20_lost"] = r["support_lost"] = True
+        if vwap and ((price - vwap) / vwap) * 100 < -self.vwap_thr: r["vwap_lost"] = r["support_lost"] = True
+        if ema9 and ((price - ema9) / ema9) * 100 < -self.ema_thr: r["ema9_lost"] = r["support_lost"] = True
+        if ema20 and ((price - ema20) / ema20) * 100 < -self.ema_thr: r["ema20_lost"] = r["support_lost"] = True
         if vp:
             if price < vp.poc_price * 0.995: r["poc_lost"] = r["support_lost"] = True
             if price < vp.value_area_low: r["val_lost"] = r["support_lost"] = True

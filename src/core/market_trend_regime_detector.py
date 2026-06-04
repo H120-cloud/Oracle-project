@@ -92,7 +92,7 @@ class MarketTrendRegimeDetector:
         ema_score = self._score_ema_structure(current_price, ema9, ema20, ema50)
         
         # Component 2: Price vs EMA50
-        price_vs_ema50_pct = ((current_price - ema50) / ema50) * 100
+        price_vs_ema50_pct = ((current_price - ema50) / ema50) * 100 if ema50 else 0
         
         # Component 3: Trend Structure (HH/HL or LH/LL)
         trend_score = self._score_trend_structure(bars)
@@ -169,7 +169,7 @@ class MarketTrendRegimeDetector:
         # Check perfect bullish alignment
         if price > ema9 > ema20 > ema50:
             # Calculate how strong the alignment is
-            spread_pct = ((price - ema50) / ema50) * 100
+            spread_pct = ((price - ema50) / ema50) * 100 if ema50 else 0
             return min(100.0, 80.0 + spread_pct * 2)  # 80-100 range
         
         # Check perfect bearish alignment
@@ -339,7 +339,7 @@ class MarketTrendRegimeDetector:
         if abs(price_vs_ema50_pct) < 2:
             mixed_reasons.append("Price near EMA50")
         
-        if abs(((price - vwap) / vwap) * 100) < 1:
+        if vwap and abs(((price - vwap) / vwap) * 100) < 1:
             mixed_reasons.append("Price near VWAP")
         
         reason = " | ".join(mixed_reasons) if mixed_reasons else "Mixed market conditions"

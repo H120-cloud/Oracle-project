@@ -68,8 +68,8 @@ class OrderFlowAnalyzer:
         aggressive_sell_ratio = total_sell / total_volume if total_volume > 0 else 0.5
 
         # ── Large order detection ────────────────────────────────────────
-        avg_vol = float(volumes.mean())
-        large_mask = volumes > (avg_vol * self.large_order_mult)
+        avg_vol = float(volumes.mean()) if len(volumes) > 0 else 0.0
+        large_mask = volumes > (avg_vol * self.large_order_mult) if avg_vol > 0 else np.zeros_like(volumes, dtype=bool)
 
         # Classify large orders as buy or sell based on candle direction
         bullish_candle = closes > opens

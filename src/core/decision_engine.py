@@ -7,7 +7,7 @@ stop, targets, risk_score, setup_grade, and confidence.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from src.models.schemas import (
@@ -93,7 +93,7 @@ class DecisionEngine:
             bounce=bounce,
         )
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         reasons: list[str] = []
 
         # ── V6: MARKET REGIME DETECTION ────────────────────────────────────

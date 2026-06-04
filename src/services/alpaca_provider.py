@@ -11,14 +11,19 @@ Requires: ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables.
 
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
-from src.models.schemas import OHLCVBar, DipFeatures, BounceFeatures
+from src.config import get_settings
+from src.models.market_data import OHLCVBar
+from src.models.schemas import DipFeatures, BounceFeatures
 from src.services.market_data import IMarketDataProvider, DEFAULT_SCAN_UNIVERSE
+from src.services import polygon_provider, yahoo_finance_provider
+from src.services.ticker_normalization import normalize_ticker_for_provider
 
 logger = logging.getLogger(__name__)
 
@@ -30,17 +35,15 @@ try:
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import (
         StockBarsRequest,
-        StockLatestQuoteRequest,
         StockSnapshotRequest,
     )
+    from alpaca.data.enums import DataFeed
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
     from alpaca.trading.client import TradingClient
     from alpaca.trading.requests import (
         MarketOrderRequest,
-        LimitOrderRequest,
-        GetAssetsRequest,
     )
-    from alpaca.trading.enums import OrderSide, TimeInForce, AssetStatus
+    from alpaca.trading.enums import OrderSide, TimeInForce
     _alpaca_available = True
 except ImportError:
     logger.warning(
@@ -92,10 +95,17 @@ class AlpacaProvider(IMarketDataProvider):
     ):
         _require_alpaca()
 
-        self.api_key = api_key or os.getenv("ALPACA_API_KEY", "")
-        self.secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY", "")
+        settings = get_settings()
+        self.api_key = api_key or os.getenv("ALPACA_API_KEY", "") or settings.alpaca_api_key
+        self.secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY", "") or settings.alpaca_secret_key
         self.paper = paper
         self.universe = universe or DEFAULT_SCAN_UNIVERSE
+        feed_name = (
+            os.getenv("ALPACA_DATA_FEED", "")
+            or getattr(settings, "alpaca_data_feed", "")
+            or "iex"
+        ).strip().lower()
+        self.data_feed = DataFeed.SIP if feed_name == "sip" else DataFeed.IEX
 
         if not self.api_key or not self.secret_key:
             raise ValueError(
@@ -118,8 +128,8 @@ class AlpacaProvider(IMarketDataProvider):
         )
 
         logger.info(
-            "AlpacaProvider initialized (paper=%s, universe=%d tickers)",
-            paper, len(self.universe),
+            "AlpacaProvider initialized (paper=%s, feed=%s, universe=%d tickers)",
+            paper, self.data_feed, len(self.universe),
         )
 
         # Initialize timeframe mapping now that imports are verified
@@ -142,7 +152,14 @@ class AlpacaProvider(IMarketDataProvider):
         """Fetch latest snapshots for scan universe tickers."""
         rows = []
         try:
-            request = StockSnapshotRequest(symbol_or_symbols=self.universe)
+            provider_universe = [
+                normalize_ticker_for_provider(ticker, "alpaca")
+                for ticker in self.universe
+            ]
+            request = StockSnapshotRequest(
+                symbol_or_symbols=provider_universe,
+                feed=self.data_feed,
+            )
             snapshots = self.data_client.get_stock_snapshot(request)
 
             for symbol, snap in snapshots.items():
@@ -179,6 +196,7 @@ class AlpacaProvider(IMarketDataProvider):
     ) -> List[OHLCVBar]:
         """Fetch OHLCV bars from Alpaca."""
         _require_alpaca()
+        provider_ticker = normalize_ticker_for_provider(ticker, "alpaca")
 
         # Resolve timeframe
         tf_key = interval if interval in _TF_MAP else "1m"
@@ -190,22 +208,26 @@ class AlpacaProvider(IMarketDataProvider):
             start_dt = pd.Timestamp(start).to_pydatetime()
             end_dt = pd.Timestamp(end).to_pydatetime()
         elif period and period in _PERIOD_MAP:
-            end_dt = datetime.utcnow()
+            end_dt = datetime.now(timezone.utc).replace(tzinfo=None)
             start_dt = end_dt - _PERIOD_MAP[period]
         else:
-            end_dt = datetime.utcnow()
+            end_dt = datetime.now(timezone.utc).replace(tzinfo=None)
             start_dt = end_dt - timedelta(days=1)
 
         request = StockBarsRequest(
-            symbol_or_symbols=ticker,
+            symbol_or_symbols=provider_ticker,
             timeframe=timeframe,
             start=start_dt,
             end=end_dt,
+            feed=self.data_feed,
         )
 
         try:
             bars_set = self.data_client.get_stock_bars(request)
-            bars_list = bars_set[ticker] if ticker in bars_set else []
+            if hasattr(bars_set, "data"):
+                bars_list = bars_set.data.get(provider_ticker, [])
+            else:
+                bars_list = bars_set[provider_ticker] if provider_ticker in bars_set else []
         except Exception as e:
             logger.warning("Alpaca get_ohlcv failed for %s: %s", ticker, e)
             return []
@@ -344,7 +366,7 @@ class AlpacaProvider(IMarketDataProvider):
 
             # Support
             support = float(low.rolling(20).min().iloc[-1])
-            support_dist = ((current_price - support) / support) * 100
+            support_dist = ((current_price - support) / support) * 100 if support else 0.0
 
             # Selling pressure
             red_mask = close < open_
@@ -417,19 +439,94 @@ class AlpacaProvider(IMarketDataProvider):
                 momentum_state=momentum_state,
             )
             return features, current_price
-
         except Exception as e:
             logger.error("compute_bounce_features [%s] Alpaca failed: %s", ticker, e)
             return None, 0.0
 
-    def get_live_quote(self, ticker: str) -> dict:
-        """Fast live quote from Alpaca snapshot."""
-        try:
-            from alpaca.data.requests import StockSnapshotRequest
+    def _fetch_extended_hours(self, ticker: str) -> tuple[dict, dict]:
+        """Fetch premarket and afterhours bars. Alpaca first, then Polygon, then Yahoo Finance."""
+        provider_ticker = normalize_ticker_for_provider(ticker, "alpaca")
+        premarket = {"high": 0, "low": 0, "volume": 0, "open": 0, "close": 0}
+        afterhours = {"high": 0, "low": 0, "volume": 0, "open": 0, "close": 0}
 
-            request = StockSnapshotRequest(symbol_or_symbols=ticker)
+        # ── 1. Alpaca (best quality, requires paid feed for AH/PM) ─────────────
+        if _alpaca_available:
+            try:
+                now_et = datetime.now(ZoneInfo("America/New_York"))
+                pre_start = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
+                pre_end = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+                ah_start = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+                ah_end = now_et.replace(hour=20, minute=0, second=0, microsecond=0)
+
+                start_pre = pre_start.astimezone(timezone.utc)
+                end_pre = pre_end.astimezone(timezone.utc)
+                start_ah = ah_start.astimezone(timezone.utc)
+                end_ah = ah_end.astimezone(timezone.utc)
+
+                req_pre = StockBarsRequest(
+                    symbol_or_symbols=provider_ticker,
+                    timeframe=TimeFrame.Minute,
+                    start=start_pre,
+                    end=end_pre,
+                    feed=self.data_feed,
+                )
+                bars_pre = self.data_client.get_stock_bars(req_pre)
+                df_pre = bars_pre.df if hasattr(bars_pre, "df") else pd.DataFrame()
+                if not df_pre.empty:
+                    premarket = {
+                        "high": round(df_pre["high"].max(), 4),
+                        "low": round(df_pre["low"].min(), 4),
+                        "volume": int(df_pre["volume"].sum()),
+                        "open": round(df_pre["open"].iloc[0], 4),
+                        "close": round(df_pre["close"].iloc[-1], 4),
+                    }
+
+                req_ah = StockBarsRequest(
+                    symbol_or_symbols=provider_ticker,
+                    timeframe=TimeFrame.Minute,
+                    start=start_ah,
+                    end=end_ah,
+                    feed=self.data_feed,
+                )
+                bars_ah = self.data_client.get_stock_bars(req_ah)
+                df_ah = bars_ah.df if hasattr(bars_ah, "df") else pd.DataFrame()
+                if not df_ah.empty:
+                    afterhours = {
+                        "high": round(df_ah["high"].max(), 4),
+                        "low": round(df_ah["low"].min(), 4),
+                        "volume": int(df_ah["volume"].sum()),
+                        "open": round(df_ah["open"].iloc[0], 4),
+                        "close": round(df_ah["close"].iloc[-1], 4),
+                    }
+
+                if premarket["volume"] > 0 or afterhours["volume"] > 0:
+                    return premarket, afterhours
+            except Exception as e:
+                logger.debug("Alpaca extended hours fetch failed for %s: %s", ticker, e)
+
+        # ── 2. Polygon.io fallback ────────────────────────────────────────────
+        poly_pre, _ = polygon_provider.fetch_premarket_bars(ticker)
+        poly_ah, _ = polygon_provider.fetch_afterhours_bars(ticker)
+        if poly_pre or poly_ah:
+            return poly_pre or premarket, poly_ah or afterhours
+
+        # 3. Yahoo Finance fallback (no API key) ────────────────────────────
+        yf_pre, yf_ah = yahoo_finance_provider.fetch_extended_hours(ticker)
+        if yf_pre or yf_ah:
+            return yf_pre or premarket, yf_ah or afterhours
+
+        return premarket, afterhours
+
+    def get_live_quote(self, ticker: str) -> dict:
+        """Get live quote with extended hours data."""
+        try:
+            provider_ticker = normalize_ticker_for_provider(ticker, "alpaca")
+            request = StockSnapshotRequest(
+                symbol_or_symbols=provider_ticker,
+                feed=self.data_feed,
+            )
             snapshots = self.data_client.get_stock_snapshot(request)
-            snap = snapshots.get(ticker)
+            snap = snapshots.get(provider_ticker)
 
             if not snap:
                 return {"price": 0, "error": "No snapshot available"}
@@ -451,6 +548,25 @@ class AlpacaProvider(IMarketDataProvider):
             change = current_price - prev_close if prev_close > 0 else 0
             change_pct = (change / prev_close * 100) if prev_close > 0 else 0
 
+            premarket, afterhours = self._fetch_extended_hours(ticker)
+            if prev_close > 0 and open_price > 0:
+                premarket["gap_pct"] = round((open_price - prev_close) / prev_close * 100, 2)
+
+            # ── Extended-hours price override ────────────────────────────────
+            # Alpaca free IEX feed doesn't update after-hours. If we have
+            # active premarket or after-hours bars, use them as the live price.
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            in_premarket = (now_et.hour < 9) or (now_et.hour == 9 and now_et.minute < 30)
+            in_afterhours = now_et.hour >= 16
+
+            if in_premarket and premarket and premarket.get("volume", 0) > 0:
+                current_price = premarket.get("close", current_price)
+            elif in_afterhours and afterhours and afterhours.get("volume", 0) > 0:
+                current_price = afterhours.get("close", current_price)
+
+            change = current_price - prev_close if prev_close > 0 else 0
+            change_pct = (change / prev_close * 100) if prev_close > 0 else 0
+
             return {
                 "price": round(current_price, 2),
                 "previous_close": round(prev_close, 2),
@@ -461,8 +577,8 @@ class AlpacaProvider(IMarketDataProvider):
                 "day_low": round(day_low, 2),
                 "volume": volume,
                 "market_cap": None,
-                "premarket": {"high": 0, "low": 0, "volume": 0, "gap_pct": 0},
-                "afterhours": {"high": 0, "low": 0, "volume": 0},
+                "premarket": premarket,
+                "afterhours": afterhours,
             }
         except Exception as e:
             logger.error("get_live_quote [%s] Alpaca failed: %s", ticker, e)

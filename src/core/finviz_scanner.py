@@ -5,26 +5,90 @@ Fetches the top 20 gainers from Finviz's screener page, extracts ticker
 symbols, then pulls live market data via Yahoo Finance for each ticker.
 """
 
+import json
 import logging
+import os
+import re
 from typing import Optional
+
+from src.utils.atomic_json import save_json_file
 
 import httpx
 from bs4 import BeautifulSoup
 import yfinance as yf
 
 from src.models.schemas import ScannedStock
+from src.utils.yfinance_cache import configure_yfinance_cache
+
+configure_yfinance_cache(yf)
 
 logger = logging.getLogger(__name__)
 
-FINVIZ_GAINERS_URL = "https://finviz.com/screener.ashx?v=111&s=ta_topgainers"
-FINVIZ_UNDER2_URL = "https://finviz.com/screener.ashx?v=111&f=sh_curvol_o10000%2Csh_price_u2"
+FINVIZ_GAINERS_URL = "https://finviz.com/screener?v=111&s=ta_topgainers"
+FINVIZ_UNDER2_URL = "https://finviz.com/screener?v=111&f=sh_curvol_o10000%2Csh_price_u2"
 
 
 class FinvizScanner:
     """Scrapes Finviz top gainers and fetches market data via Yahoo Finance."""
 
+    # Shared bad-ticker cache path (same file CatalystScanner uses)
+    _BAD_TICKERS_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "agentic", "bad_tickers.json")
+
     def __init__(self, max_results: int = 20):
         self.max_results = max_results
+        self._bad_tickers: set[str] = set()
+        self._load_bad_tickers()
+
+    def _load_bad_tickers(self):
+        try:
+            path = os.path.normpath(self._BAD_TICKERS_PATH)
+            if os.path.exists(path):
+                with open(path) as f:
+                    self._bad_tickers = set(json.load(f))
+                logger.debug("FinvizScanner: loaded %d bad tickers", len(self._bad_tickers))
+        except Exception as exc:
+            logger.debug("Failed to load bad tickers: %s", exc)
+
+    def _save_bad_tickers(self):
+        try:
+            path = os.path.normpath(self._BAD_TICKERS_PATH)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            save_json_file(path, sorted(self._bad_tickers))
+        except Exception as exc:
+            logger.debug("Failed to save bad tickers: %s", exc)
+
+    def _validate_tickers(self, tickers: list[str]) -> list[str]:
+        """Quick yfinance validation to strip false positives.
+
+        Only permanently cache tickers that have no price data (genuinely
+        invalid / delisted). Transient errors (rate limits, network issues)
+        are NOT cached so they are retried on the next scan.
+        """
+        valid = []
+        for t in tickers:
+            if t in self._bad_tickers:
+                continue
+            try:
+                # Use history() instead of fast_info — much more reliable
+                hist = yf.Ticker(t).history(period="5d", interval="1d")
+                if not hist.empty:
+                    valid.append(t)
+                else:
+                    # No price history — genuinely invalid/delisted ticker
+                    self._bad_tickers.add(t)
+            except Exception as exc:
+                err = str(exc).lower()
+                # Only blacklist on clear "not found" errors
+                if any(k in err for k in ("delisted", "not found", "invalid symbol", "no data found")):
+                    self._bad_tickers.add(t)
+                    logger.debug("Blacklisted %s: %s", t, exc)
+                else:
+                    # Transient error — retry next scan
+                    logger.debug("Ticker validation transient fail for %s: %s", t, exc)
+        if len(valid) != len(tickers):
+            self._save_bad_tickers()
+            logger.info("Filtered %d invalid tickers", len(tickers) - len(valid))
+        return valid
 
     def scan_gainers(self) -> list[ScannedStock]:
         """Fetch top gainers from Finviz, then get live data from Yahoo Finance."""
@@ -37,7 +101,11 @@ class FinvizScanner:
         logger.info("Scraped %d tickers from Finviz: %s", len(tickers), tickers)
         return self._fetch_market_data(tickers)
 
-    def _scrape_finviz_tickers(self, url: str = FINVIZ_GAINERS_URL) -> list[str]:
+    def _scrape_finviz_tickers(
+        self,
+        url: str = FINVIZ_GAINERS_URL,
+        validate: bool = True,
+    ) -> list[str]:
         """Scrape ticker symbols from a Finviz screener page."""
         try:
             headers = {
@@ -47,19 +115,41 @@ class FinvizScanner:
                     "Chrome/120.0.0.0 Safari/537.36"
                 )
             }
-            response = httpx.get(url, headers=headers, timeout=30)
+            response = httpx.get(url, headers=headers, timeout=30, follow_redirects=True)
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, "lxml")
 
-            # Find all links that point to quote.ashx?t=TICKER
+            # Find all ticker links anywhere on the page. Finviz has used
+            # multiple URL shapes over time:
+            #   old: quote.ashx?t=ASTC
+            #   old: quote?t=ASTC
+            #   new: stock?t=ASTC&ty=c&p=d&b=1
+            # It also carries data-boxover-ticker on the ticker cell.
             tickers = []
+            ticker_re = re.compile(r"(?:[?&]t=)([A-Z][A-Z0-9.]{0,7})(?:&|$)")
             for link in soup.find_all("a", href=True):
                 href = link.get("href", "")
-                if "quote.ashx?t=" in href:
-                    ticker = link.text.strip()
-                    if ticker and ticker.isalpha() and len(ticker) <= 5:
-                        tickers.append(ticker.upper())
+                ticker = ""
+                if "quote?t=" in href or "quote.ashx?t=" in href or "stock?t=" in href:
+                    match = ticker_re.search(href)
+                    ticker = match.group(1) if match else link.text.strip()
+                if (
+                    ticker
+                    and ticker.replace(".", "").isalnum()
+                    and ticker.upper() == ticker
+                    and 1 <= len(ticker) <= 5
+                ):
+                    tickers.append(ticker)
+
+            for el in soup.find_all(attrs={"data-boxover-ticker": True}):
+                ticker = (el.get("data-boxover-ticker") or "").strip().upper()
+                if (
+                    ticker
+                    and ticker.replace(".", "").isalnum()
+                    and 1 <= len(ticker) <= 5
+                ):
+                    tickers.append(ticker)
 
             # De-duplicate while preserving order
             seen = set()
@@ -70,7 +160,9 @@ class FinvizScanner:
                     unique.append(t)
 
             logger.info("Found %d tickers from Finviz", len(unique))
-            return unique
+            if not validate:
+                return unique
+            return self._validate_tickers(unique)
 
         except Exception as exc:
             logger.error("Failed to scrape Finviz: %s", exc)

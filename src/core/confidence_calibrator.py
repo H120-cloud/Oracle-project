@@ -16,6 +16,8 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Tuple
 
+from src.utils.atomic_json import save_json_file, load_json_file
+
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -111,13 +113,13 @@ class ConfidenceCalibrator:
                 baseline = sum(1 for t in trades if t.pnl_pct > 0) / len(trades) * 100 if trades else 50
                 htf_adj[bias] = round(wr - baseline, 1)
 
-        from datetime import datetime
+        from datetime import datetime, timezone
         self.profile = CalibrationProfile(
             buckets=buckets,
             grade_adjustments=grade_adj,
             htf_adjustments=htf_adj,
             total_trades_used=len(trades),
-            last_calibrated=datetime.utcnow().isoformat(),
+            last_calibrated=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             is_calibrated=True,
         )
         self._save()
@@ -208,18 +210,16 @@ class ConfidenceCalibrator:
                 "last_calibrated": self.profile.last_calibrated,
                 "is_calibrated": self.profile.is_calibrated,
             }
-            with open(path, "w") as f:
-                json.dump(data, f, indent=2)
+            save_json_file(path, data)
         except Exception as e:
             logger.error("Failed to save calibration: %s", e)
 
     def _load(self):
+        path = self.data_dir / "calibration.json"
+        data = load_json_file(path, default=None)
+        if data is None:
+            return
         try:
-            path = self.data_dir / "calibration.json"
-            if not path.exists():
-                return
-            with open(path) as f:
-                data = json.load(f)
             self.profile = CalibrationProfile(
                 buckets=[CalibrationBucket(**b) for b in data.get("buckets", [])],
                 grade_adjustments=data.get("grade_adjustments", {}),
@@ -230,6 +230,6 @@ class ConfidenceCalibrator:
             )
             if self.profile.is_calibrated:
                 logger.info("Loaded calibration: %d trades, %d buckets",
-                           self.profile.total_trades_used, len(self.profile.buckets))
+                            self.profile.total_trades_used, len(self.profile.buckets))
         except Exception as e:
             logger.warning("Failed to load calibration: %s", e)

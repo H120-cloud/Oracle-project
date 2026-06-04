@@ -11,7 +11,6 @@ import logging
 import time
 import threading
 from typing import Optional, Any, Dict, Tuple
-from functools import wraps
 
 logger = logging.getLogger(__name__)
 
@@ -86,5 +85,5 @@ def get_cache() -> DataCache:
 # TTL constants
 OHLCV_INTRADAY_TTL = 60    # 1 minute for intraday bars
 OHLCV_DAILY_TTL = 300       # 5 minutes for daily bars
-FAST_INFO_TTL = 15           # 15 seconds for live price
+FAST_INFO_TTL = 120          # 2 minutes for live price — reduce yfinance 429 pressure
 ANALYSIS_TTL = 120           # 2 minutes for analysis results

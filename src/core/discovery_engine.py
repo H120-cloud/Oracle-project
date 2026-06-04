@@ -33,15 +33,15 @@ HEADERS = {
 # ── Finviz URLs ──────────────────────────────────────────────────────────────
 
 FINVIZ_URLS = {
-    "gainers": "https://finviz.com/screener.ashx?v=111&s=ta_topgainers",
-    "active": "https://finviz.com/screener.ashx?v=111&s=ta_mostactive",
-    "unusual_volume": "https://finviz.com/screener.ashx?v=111&s=ta_unusualvolume",
-    "new_high": "https://finviz.com/screener.ashx?v=111&s=ta_newhigh",
-    "overbought": "https://finviz.com/screener.ashx?v=111&s=ta_overbought",
-    "most_volatile": "https://finviz.com/screener.ashx?v=111&s=ta_mostvolatile",
-    "under5_active": "https://finviz.com/screener.ashx?v=111&f=sh_curvol_o500000%2Csh_price_u5",
-    "under2_volume": "https://finviz.com/screener.ashx?v=111&f=sh_curvol_o10000%2Csh_price_u2",
-    "penny_movers": "https://finviz.com/screener.ashx?v=111&f=sh_curvol_o50000%2Csh_price_u1",
+    "gainers": "https://finviz.com/screener?v=111&s=ta_topgainers",
+    "active": "https://finviz.com/screener?v=111&s=ta_mostactive",
+    "unusual_volume": "https://finviz.com/screener?v=111&s=ta_unusualvolume",
+    "new_high": "https://finviz.com/screener?v=111&s=ta_newhigh",
+    "overbought": "https://finviz.com/screener?v=111&s=ta_overbought",
+    "most_volatile": "https://finviz.com/screener?v=111&s=ta_mostvolatile",
+    "under5_active": "https://finviz.com/screener?v=111&f=sh_curvol_o500000%2Csh_price_u5",
+    "under2_volume": "https://finviz.com/screener?v=111&f=sh_curvol_o10000%2Csh_price_u2",
+    "penny_movers": "https://finviz.com/screener?v=111&f=sh_curvol_o50000%2Csh_price_u1",
 }
 
 # ── Yahoo Finance News URL ──────────────────────────────────────────────────
@@ -165,14 +165,14 @@ class DiscoveryEngine:
     def _discover_finviz(self, url: str, source: str, reason: str) -> list[DiscoveredTicker]:
         """Scrape tickers from a Finviz screener page."""
         try:
-            response = httpx.get(url, headers=HEADERS, timeout=30)
+            response = httpx.get(url, headers=HEADERS, timeout=30, follow_redirects=True)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "lxml")
 
             tickers = []
             for link in soup.find_all("a", href=True):
                 href = link.get("href", "")
-                if "quote.ashx?t=" in href:
+                if "quote?t=" in href:
                     ticker = link.text.strip()
                     if ticker and ticker.isalpha() and 1 <= len(ticker) <= 5:
                         tickers.append(ticker.upper())
@@ -281,7 +281,7 @@ class DiscoveryEngine:
         Discover stocks with significant premarket gaps using Finviz.
         Uses the 'gap up' and 'gap down' screeners.
         """
-        gap_up_url = "https://finviz.com/screener.ashx?v=111&s=ta_topgainers&f=sh_curvol_o100000"
+        gap_up_url = "https://finviz.com/screener?v=111&s=ta_topgainers&f=sh_curvol_o100000"
         discovered = self._discover_finviz(gap_up_url, "premarket", "Premarket gap detected")
         
         # Tag with gap info

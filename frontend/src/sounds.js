@@ -3,11 +3,13 @@
  * No external audio files needed. Each alert type has a distinct tone.
  *
  * Sound types:
- *  - dip:     Descending tone (warning, stock dipping)
- *  - bullish: Ascending triumphant chord (bounce confirmed / going up)
- *  - bearish: Low ominous pulse (bearish shift)
- *  - volume:  Quick double-tap (volume surge)
- *  - default: Simple notification ping
+ *  - dip:       Descending tone (warning, stock dipping)
+ *  - bullish:   Ascending triumphant chord (bounce confirmed / going up)
+ *  - bearish:   Low ominous pulse (bearish shift)
+ *  - volume:    Quick double-tap (volume surge)
+ *  - money_up:  Money printer counting sound (stock going up)
+ *  - money_down: Voice says "where's my money" (stock going down)
+ *  - default:   Simple notification ping
  */
 
 let audioCtx = null
@@ -93,6 +95,70 @@ export function playDefaultSound() {
   playTone(1000, 0.2, 'sine', 0.15, 0.15)
 }
 
+export function playMoneyUpSound() {
+  // Money printer / counting machine — rapid staccato clicks ascending in pitch
+  const ctx = getCtx()
+  const now = ctx.currentTime
+
+  // Rapid "brrrr" clicking noise (money printer go brrr)
+  for (let i = 0; i < 12; i++) {
+    const t = i * 0.07
+    const freq = 800 + i * 80  // ascending pitch
+    playTone(freq, 0.04, 'square', 0.15, t)
+  }
+
+  // Cash register "cha-ching" finish
+  playTone(1800, 0.08, 'sine', 0.25, 0.9)
+  playTone(2400, 0.15, 'triangle', 0.3, 0.98)
+  playTone(3200, 0.25, 'sine', 0.2, 1.05)
+}
+
+export function playMoneyDownSound() {
+  // Mr. Krabs "Where's me money?!" via SpeechSynthesis
+  try {
+    if ('speechSynthesis' in window) {
+      // Cancel any ongoing speech
+      window.speechSynthesis.cancel()
+
+      // Pick a deeper male-ish voice if available
+      const voices = window.speechSynthesis.getVoices()
+      const krabsVoice = voices.find(v =>
+        v.lang.startsWith('en') &&
+        (v.name.toLowerCase().includes('male') ||
+         v.name.toLowerCase().includes('david') ||
+         v.name.toLowerCase().includes('daniel') ||
+         v.name.toLowerCase().includes('james') ||
+         v.name.toLowerCase().includes('richard') ||
+         v.name.toLowerCase().includes('microsoft'))
+      ) || voices.find(v => v.lang.startsWith('en')) || null
+
+      const utterance = new SpeechSynthesisUtterance("Where's me money?!")
+      utterance.rate = 1.25      // fast & frantic
+      utterance.pitch = 0.35    // deep & gruff like Krabs
+      utterance.volume = 1.0
+      if (krabsVoice) utterance.voice = krabsVoice
+
+      // Tiny echo/reverb for that underwater cave effect
+      const echo = new SpeechSynthesisUtterance("Money...")
+      echo.rate = 1.0
+      echo.pitch = 0.3
+      echo.volume = 0.35
+      if (krabsVoice) echo.voice = krabsVoice
+
+      window.speechSynthesis.speak(utterance)
+      setTimeout(() => window.speechSynthesis.speak(echo), 700)
+    } else {
+      // Fallback: ominous descending tones
+      playFreqRamp(600, 150, 0.8, 'sawtooth', 0.25, 0)
+      playTone(100, 0.5, 'square', 0.15, 0.8)
+    }
+  } catch (err) {
+    // Fallback sound if speech fails
+    playFreqRamp(600, 150, 0.8, 'sawtooth', 0.25, 0)
+    playTone(100, 0.5, 'square', 0.15, 0.8)
+  }
+}
+
 // ── Main dispatcher ────────────────────────────────────────────────────────
 
 const SOUND_MAP = {
@@ -100,6 +166,8 @@ const SOUND_MAP = {
   bullish: playBullishSound,
   bearish: playBearishSound,
   volume: playVolumeSound,
+  money_up: playMoneyUpSound,
+  money_down: playMoneyDownSound,
 }
 
 export function playAlertSound(soundType) {
@@ -120,7 +188,7 @@ export function unlockAudio() {
     const ctx = getCtx()
     if (ctx.state === 'suspended') ctx.resume()
     // Play a silent tone to unlock
-    playTone(0, 0.01, 'sine', 0, 0)
+    playTone(1, 0.01, 'sine', 0, 0)
   } catch (err) {
     console.warn('Audio unlock failed:', err)
   }

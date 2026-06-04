@@ -369,7 +369,7 @@ class FullFeaturedBacktester:
                 probability=min(75, int(abs(price_decline) * 25) + lower_highs * 5),
                 phase=DipPhase.EARLY if price_decline > -5 else DipPhase.MID if price_decline > -10 else DipPhase.LATE,
                 features=DipFeatures(
-                    vwap_distance_pct=((closes[-1] - vwap) / vwap) * 100,
+                    vwap_distance_pct=((closes[-1] - vwap) / vwap) * 100 if vwap else 0.0,
                     ema9_distance_pct=-2.0,
                     ema20_distance_pct=-1.8,
                     drop_from_high_pct=abs(price_decline),
@@ -520,14 +520,14 @@ class FullFeaturedBacktester:
         
         # Stop loss hit
         if current_bar.low <= stop:
-            pnl = ((stop - entry_price) / entry_price) * 100
+            pnl = ((stop - entry_price) / entry_price) * 100 if entry_price else 0
             self._record_trade(result, signal, position["entry_date"], 
                              str(current_bar.timestamp), entry_price, stop, pnl, "STOP_LOSS")
             return True
         
         # Target hit
         if current_bar.high >= target:
-            pnl = ((target - entry_price) / entry_price) * 100
+            pnl = ((target - entry_price) / entry_price) * 100 if entry_price else 0
             self._record_trade(result, signal, position["entry_date"],
                              str(current_bar.timestamp), entry_price, target, pnl, "TARGET_HIT")
             return True
@@ -544,7 +544,7 @@ class FullFeaturedBacktester:
         """Close position at end of backtest."""
         entry_price = position["entry_price"]
         exit_price = current_bar.close
-        pnl = ((exit_price - entry_price) / entry_price) * 100
+        pnl = ((exit_price - entry_price) / entry_price) * 100 if entry_price else 0
         
         self._record_trade(result, position["signal"], position["entry_date"],
                          str(current_bar.timestamp), entry_price, exit_price, pnl, action)
@@ -581,7 +581,7 @@ class FullFeaturedBacktester:
                 if "ICT score" in r:
                     try:
                         ict_score = int(r.split(":")[1].split("/")[0].strip())
-                    except:
+                    except Exception:
                         pass
                 elif "Sweep+reclaim" in r:
                     liquidity_sweep = True
@@ -595,13 +595,13 @@ class FullFeaturedBacktester:
                     overextended = True
                     try:
                         extension = float(r.split()[1].rstrip("%"))
-                    except:
+                    except Exception:
                         pass
                 elif "Near OB" in r:
                     near_ob = True
                     try:
                         ob_freshness = float(r.split("fresh:")[1].rstrip(")"))
-                    except:
+                    except Exception:
                         pass
                 elif "Volatility" in r:
                     if "high" in r.lower():

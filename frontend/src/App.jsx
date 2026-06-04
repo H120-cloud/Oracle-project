@@ -1,4 +1,5 @@
-import { Routes, Route, NavLink } from 'react-router-dom'
+import { Suspense } from 'react'
+import { Routes, Route, NavLink, Navigate } from 'react-router-dom'
 import {
   LayoutDashboard,
   LineChart,
@@ -11,32 +12,47 @@ import {
   Brain,
   Activity as ActivityIcon,
   Newspaper,
+  Zap,
+  Rocket,
 } from 'lucide-react'
-import Dashboard from './pages/Dashboard'
-import Analysis from './pages/Analysis'
-import Backtest from './pages/Backtest'
-import Performance from './pages/Performance'
-import Portfolio from './pages/Portfolio'
-import SettingsPage from './pages/Settings'
-import Watchlist from './pages/Watchlist'
-import Intelligence from './pages/Intelligence'
-import ActiveTrades from './pages/ActiveTrades'
 import News from './pages/News'
-import PaperTrading from './pages/PaperTrading'
+import Agentic from './pages/Agentic'
+import HistoricalTraining from './pages/HistoricalTraining'
+import NewsMomentum from './pages/NewsMomentum'
+import SECIntelligence from './pages/SECIntelligence'
+
+const LEAN_MODE = import.meta.env.VITE_ORACLE_LEAN_MODE === 'true'
+const FRONTEND_FLAGS = {
+  analysis: !LEAN_MODE || import.meta.env.VITE_ENABLE_ANALYSIS_ROUTES === 'true',
+  backtest: !LEAN_MODE || import.meta.env.VITE_ENABLE_BACKTEST === 'true',
+  intelligence: !LEAN_MODE || import.meta.env.VITE_ENABLE_INTELLIGENCE_ROUTES === 'true',
+  paperTrading: !LEAN_MODE || import.meta.env.VITE_ENABLE_PAPER_TRADING === 'true',
+  watchlist: !LEAN_MODE || import.meta.env.VITE_ENABLE_WATCHLIST === 'true',
+}
 
 const NAV = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/intelligence', icon: Brain, label: 'Intelligence' },
-  { to: '/active-trades', icon: ActivityIcon, label: 'Active Trades' },
-  { to: '/analysis', icon: LineChart, label: 'Analysis' },
+  { to: '/', icon: LayoutDashboard, label: 'Dashboard', legacy: true },
+  { to: '/intelligence', icon: Brain, label: 'Intelligence', flag: 'intelligence' },
+  { to: '/active-trades', icon: ActivityIcon, label: 'Active Trades', flag: 'intelligence' },
+  { to: '/analysis', icon: LineChart, label: 'Analysis', flag: 'analysis' },
   { to: '/news', icon: Newspaper, label: 'News' },
-  { to: '/watchlist', icon: Eye, label: 'Watchlist' },
-  { to: '/portfolio', icon: Briefcase, label: 'Portfolio' },
-  { to: '/backtest', icon: FlaskConical, label: 'Backtest' },
-  { to: '/paper-trading', icon: FlaskConical, label: 'Paper Trading' },
-  { to: '/performance', icon: BarChart3, label: 'Performance' },
-  { to: '/settings', icon: Settings, label: 'Settings' },
+  { to: '/watchlist', icon: Eye, label: 'Watchlist', flag: 'watchlist' },
+  { to: '/portfolio', icon: Briefcase, label: 'Portfolio', legacy: true },
+  { to: '/backtest', icon: FlaskConical, label: 'Backtest', flag: 'backtest' },
+  { to: '/paper-trading', icon: FlaskConical, label: 'Paper Trading', flag: 'paperTrading' },
+  { to: '/performance', icon: BarChart3, label: 'Performance', legacy: true },
+  { to: '/agentic', icon: Zap, label: 'Agentic Mode' },
+  { to: '/news-momentum', icon: Rocket, label: 'News Momentum' },
+  { to: '/sec-intelligence', icon: Brain, label: 'SEC Intelligence' },
+  { to: '/historical-training', icon: Brain, label: 'Historical Training' },
+  { to: '/settings', icon: Settings, label: 'Settings', legacy: true },
 ]
+
+function isVisible(item) {
+  if (item.flag) return FRONTEND_FLAGS[item.flag]
+  if (item.legacy) return !LEAN_MODE
+  return true
+}
 
 function Sidebar() {
   return (
@@ -50,7 +66,7 @@ function Sidebar() {
       </div>
 
       <nav className="flex-1 px-3 py-4 space-y-1">
-        {NAV.map(({ to, icon: Icon, label }) => (
+        {NAV.filter(isVisible).map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}
             to={to}
@@ -70,9 +86,20 @@ function Sidebar() {
       </nav>
 
       <div className="px-4 py-4 border-t border-gray-800">
-        <div className="text-xs text-gray-600">Oracle V10.0 — Paper Trading + Validation</div>
+        <div className="text-xs text-gray-600">Oracle V23 — SEC Filing Intelligence</div>
       </div>
     </aside>
+  )
+}
+
+function LegacyArchived({ title }) {
+  return (
+    <section className="min-h-[50vh] flex items-center justify-center">
+      <div className="max-w-lg rounded-lg border border-gray-800 bg-gray-900/60 px-6 py-5">
+        <h2 className="text-lg font-semibold text-white">{title}</h2>
+        <p className="mt-2 text-sm text-gray-400">This legacy screen has been archived.</p>
+      </div>
+    </section>
   )
 }
 
@@ -81,19 +108,25 @@ export default function App() {
     <div className="flex min-h-screen bg-gray-950">
       <Sidebar />
       <main className="flex-1 ml-64 p-6">
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/intelligence" element={<Intelligence />} />
-          <Route path="/active-trades" element={<ActiveTrades />} />
-          <Route path="/analysis" element={<Analysis />} />
-          <Route path="/news" element={<News />} />
-          <Route path="/watchlist" element={<Watchlist />} />
-          <Route path="/portfolio" element={<Portfolio />} />
-          <Route path="/backtest" element={<Backtest />} />
-          <Route path="/paper-trading" element={<PaperTrading />} />
-          <Route path="/performance" element={<Performance />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
+        <Suspense fallback={<div className="text-gray-400">Loading...</div>}>
+          <Routes>
+            <Route path="/" element={LEAN_MODE ? <Navigate to="/news-momentum" replace /> : <LegacyArchived title="Dashboard" />} />
+            {FRONTEND_FLAGS.intelligence && <Route path="/intelligence" element={<LegacyArchived title="Intelligence" />} />}
+            {FRONTEND_FLAGS.intelligence && <Route path="/active-trades" element={<LegacyArchived title="Active Trades" />} />}
+            {FRONTEND_FLAGS.analysis && <Route path="/analysis" element={<LegacyArchived title="Analysis" />} />}
+            <Route path="/news" element={<News />} />
+            {FRONTEND_FLAGS.watchlist && <Route path="/watchlist" element={<LegacyArchived title="Watchlist" />} />}
+            {!LEAN_MODE && <Route path="/portfolio" element={<LegacyArchived title="Portfolio" />} />}
+            {FRONTEND_FLAGS.backtest && <Route path="/backtest" element={<LegacyArchived title="Backtest" />} />}
+            {FRONTEND_FLAGS.paperTrading && <Route path="/paper-trading" element={<LegacyArchived title="Paper Trading" />} />}
+            {!LEAN_MODE && <Route path="/performance" element={<LegacyArchived title="Performance" />} />}
+            <Route path="/agentic" element={<Agentic />} />
+            <Route path="/news-momentum" element={<NewsMomentum />} />
+            <Route path="/sec-intelligence" element={<SECIntelligence />} />
+            <Route path="/historical-training" element={<HistoricalTraining />} />
+            {!LEAN_MODE && <Route path="/settings" element={<LegacyArchived title="Settings" />} />}
+          </Routes>
+        </Suspense>
       </main>
     </div>
   )

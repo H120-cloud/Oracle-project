@@ -37,6 +37,10 @@ except ImportError:  # Python < 3.9
 
 from pydantic import BaseModel, Field
 
+from src.core.agentic.rocket_ticker_integrity import (
+    SYNTHETIC_REJECTION_REASON,
+    is_synthetic_test_ticker,
+)
 from src.utils.atomic_json import load_json_file
 
 logger = logging.getLogger(__name__)
@@ -455,6 +459,8 @@ def _anchor_check(
     """
     if not ticker:
         return "missing_ticker"
+    if is_synthetic_test_ticker(ticker):
+        return SYNTHETIC_REJECTION_REASON
     if alert_time is None:
         return "missing_alert_time"
     if price is None or price <= 0:

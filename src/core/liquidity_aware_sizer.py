@@ -373,7 +373,7 @@ class LiquidityAwarePositionSizer(PositionSizer):
             # Estimate from high/low of last bar
             last_bar = bars[-1]
             spread = last_bar.high - last_bar.low
-            spread_pct = (spread / current_price) * 100
+            spread_pct = (spread / current_price) * 100 if current_price else 0.0
 
         # Tick size based on price tier
         if current_price < 1.0:

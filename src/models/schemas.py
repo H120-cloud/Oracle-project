@@ -7,6 +7,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from src.models.market_data import OHLCVBar
+
 
 # ── Enums ────────────────────────────────────────────────────────────────────
 
@@ -577,7 +579,7 @@ class WatchlistItem(BaseModel):
     latest_htf_strength_score: Optional[float] = None  # 0-100
     latest_alignment_status: Optional[str] = None  # ALIGNED/NEUTRAL/COUNTER_TREND
     latest_trade_type: Optional[str] = None  # TREND_FOLLOWING/COUNTER_TREND_REVERSAL
-    latest_htf_blocked: bool = False  # True if HTF filter blocked
+    latest_htf_blocked: Optional[bool] = False  # True if HTF filter blocked
     latest_htf_alignment_reason: Optional[str] = None  # Block/allow reason
     latest_htf_rsi: Optional[float] = None  # HTF RSI value
     latest_htf_adx: Optional[float] = None  # HTF ADX value
@@ -666,7 +668,6 @@ class CustomAlertItem(BaseModel):
 
 
 class CustomAlertCreate(BaseModel):
-    ticker: str
     alert_type: str  # price_above, price_below, percent_change_up, percent_change_down, rvol_above
     target_value: float
     reference_price: Optional[float] = None
@@ -714,13 +715,6 @@ class OutcomeRecord(BaseModel):
 
 # ── OHLCV Bar ────────────────────────────────────────────────────────────────
 
-class OHLCVBar(BaseModel):
-    timestamp: datetime
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
 
 
 # ── Order Flow (V4) ─────────────────────────────────────────────────────────

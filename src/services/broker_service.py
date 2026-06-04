@@ -14,10 +14,15 @@ Also works as a standalone paper-trade simulator when no API keys are set.
 import os
 import logging
 import json
-from datetime import datetime
+import threading
+from datetime import datetime, timezone
 from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Dict
 from pathlib import Path
+
+from src.utils.atomic_json import save_json_file, load_json_file
+
+import numpy as np
 from enum import Enum
 
 from src.core.trailing_stop import TrailingStopEngine, TrailingStopState
@@ -30,11 +35,8 @@ try:
     from alpaca.trading.client import TradingClient
     from alpaca.trading.requests import (
         MarketOrderRequest,
-        LimitOrderRequest,
-        StopLossRequest,
-        TakeProfitRequest,
     )
-    from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
+    from alpaca.trading.enums import OrderSide, TimeInForce
     _alpaca_available = True
 except ImportError:
     pass
@@ -67,6 +69,8 @@ class PaperOrder:
     signal_grade: Optional[str] = None
     htf_bias: Optional[str] = None
     reason: Optional[str] = None
+    # V19.1 — ML position sizing
+    ml_position_size: str = ""  # NONE, HALF, FULL
 
 
 @dataclass
@@ -90,6 +94,8 @@ class PaperPosition:
     highest_price_reached: float = 0.0
     moved_to_breakeven: bool = False
     trailing_active: bool = False
+    # V19.1 — ML position sizing
+    ml_position_size: str = ""
 
 
 @dataclass
@@ -170,10 +176,11 @@ class BrokerService:
     # Order execution
     # ------------------------------------------------------------------
 
-    def execute_signal(self, signal) -> Optional[PaperOrder]:
+    def execute_signal(self, signal, ml_position_size: str | None = None) -> Optional[PaperOrder]:
         """
         Convert a TradingSignal into a paper order.
         Only executes BUY signals with sufficient confidence.
+        ml_position_size: NONE → skip, HALF → 50% size, FULL → 100% size
         """
         from src.models.schemas import SignalAction
 
@@ -182,8 +189,13 @@ class BrokerService:
             return None
 
         if signal.confidence < 50:
-            logger.info("Skipping low-confidence signal for %s (%.0f%%)", 
+            logger.info("Skipping low-confidence signal for %s (%.0f%%)",
                        signal.ticker, signal.confidence)
+            return None
+
+        # V19.1 — ML position sizing gate
+        if ml_position_size == "NONE":
+            logger.info("ML says NONE for %s — skipping trade", signal.ticker)
             return None
 
         # Don't double up on positions
@@ -191,17 +203,21 @@ class BrokerService:
             logger.info("Already have position in %s, skipping", signal.ticker)
             return None
 
-        qty = signal.position_size_shares or 10  # Default 10 shares
+        base_qty = signal.position_size_shares or 10  # Default 10 shares
+        # V19.1 — Apply ML sizing
+        sizing_multiplier = 1.0 if ml_position_size == "FULL" else 0.5 if ml_position_size == "HALF" else 1.0
+        qty = max(1, int(base_qty * sizing_multiplier))
+
         entry = signal.entry_price
         stop = signal.stop_price
         targets = signal.target_prices or []
 
         if self.use_alpaca and self.trading_client:
-            return self._execute_alpaca(signal, qty, entry, stop, targets)
+            return self._execute_alpaca(signal, qty, entry, stop, targets, ml_position_size)
         else:
-            return self._execute_local(signal, qty, entry, stop, targets)
+            return self._execute_local(signal, qty, entry, stop, targets, ml_position_size)
 
-    def _execute_alpaca(self, signal, qty, entry, stop, targets) -> Optional[PaperOrder]:
+    def _execute_alpaca(self, signal, qty, entry, stop, targets, ml_position_size: str | None = None) -> Optional[PaperOrder]:
         """Execute via Alpaca paper trading API."""
         try:
             order_request = MarketOrderRequest(
@@ -222,12 +238,13 @@ class BrokerService:
                 take_profit_price=targets[0] if targets else None,
                 status="filled",
                 filled_price=entry,
-                filled_at=datetime.utcnow().isoformat(),
-                created_at=datetime.utcnow().isoformat(),
+                filled_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                created_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
                 signal_confidence=signal.confidence,
                 signal_grade=signal.setup_grade,
                 htf_bias=getattr(signal, 'htf_bias', None),
-                reason=f"Alpaca paper order submitted",
+                ml_position_size=ml_position_size or "",
+                reason=f"Alpaca paper order submitted (ML: {ml_position_size or 'default'})",
             )
 
             self.orders.append(paper_order)
@@ -242,7 +259,7 @@ class BrokerService:
             logger.error("Alpaca order failed for %s: %s", signal.ticker, e)
             return None
 
-    def _execute_local(self, signal, qty, entry, stop, targets) -> Optional[PaperOrder]:
+    def _execute_local(self, signal, qty, entry, stop, targets, ml_position_size: str | None = None) -> Optional[PaperOrder]:
         """Simulate order execution locally."""
         self._order_counter += 1
         order_id = f"LOCAL-{self._order_counter:06d}"
@@ -258,12 +275,13 @@ class BrokerService:
             take_profit_price=targets[0] if targets else None,
             status="filled",
             filled_price=entry,
-            filled_at=datetime.utcnow().isoformat(),
-            created_at=datetime.utcnow().isoformat(),
+            filled_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             signal_confidence=signal.confidence,
             signal_grade=signal.setup_grade,
             htf_bias=getattr(signal, 'htf_bias', None),
-            reason=f"Local paper trade",
+            ml_position_size=ml_position_size or "",
+            reason=f"Local paper trade (ML: {ml_position_size or 'default'})",
         )
 
         self.orders.append(paper_order)
@@ -294,6 +312,7 @@ class BrokerService:
             initial_stop=stop,
             atr_at_entry=atr,
             highest_price_reached=entry,
+            ml_position_size=order.ml_position_size or "",
         )
 
         # Initialize trailing stop state
@@ -358,10 +377,10 @@ class BrokerService:
                         ticker=ticker, side="buy", qty=partial_qty,
                         entry_price=pos.entry_price, exit_price=price,
                         entry_date=pos.entry_date,
-                        exit_date=datetime.utcnow().isoformat(),
+                        exit_date=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
                         pnl_dollars=round(partial_pnl, 2),
-                        pnl_pct=round((price - pos.entry_price) / pos.entry_price * 100, 2),
-                        hold_duration_minutes=int((datetime.utcnow() - datetime.fromisoformat(pos.entry_date)).total_seconds() / 60) if pos.entry_date else 0,
+                        pnl_pct=round((price - pos.entry_price) / pos.entry_price * 100, 2) if pos.entry_price else 0.0,
+                        hold_duration_minutes=int((datetime.now(timezone.utc).replace(tzinfo=None) - datetime.fromisoformat(pos.entry_date)).total_seconds() / 60) if pos.entry_date else 0,
                         exit_reason="partial_+2R",
                         signal_confidence=pos.signal_confidence,
                         signal_grade=pos.signal_grade,
@@ -397,10 +416,10 @@ class BrokerService:
 
         pos = self.positions.pop(ticker)
         pnl_dollars = (exit_price - pos.entry_price) * pos.qty
-        pnl_pct = ((exit_price - pos.entry_price) / pos.entry_price) * 100
+        pnl_pct = ((exit_price - pos.entry_price) / pos.entry_price) * 100 if pos.entry_price else 0.0
 
-        entry_dt = datetime.fromisoformat(pos.entry_date) if pos.entry_date else datetime.utcnow()
-        hold_minutes = int((datetime.utcnow() - entry_dt).total_seconds() / 60)
+        entry_dt = datetime.fromisoformat(pos.entry_date) if pos.entry_date else datetime.now(timezone.utc).replace(tzinfo=None)
+        hold_minutes = int((datetime.now(timezone.utc).replace(tzinfo=None) - entry_dt).total_seconds() / 60)
 
         # Get trailing stop state for tracking fields
         ts = self._trailing_states.pop(ticker, None)
@@ -413,7 +432,7 @@ class BrokerService:
             entry_price=pos.entry_price,
             exit_price=exit_price,
             entry_date=pos.entry_date,
-            exit_date=datetime.utcnow().isoformat(),
+            exit_date=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             pnl_dollars=round(pnl_dollars, 2),
             pnl_pct=round(pnl_pct, 2),
             hold_duration_minutes=hold_minutes,
@@ -474,7 +493,6 @@ class BrokerService:
 
         # Sharpe estimate (annualized, rough)
         returns = [t.pnl_pct for t in trades]
-        import numpy as np
         avg_return = np.mean(returns)
         std_return = np.std(returns) if len(returns) > 1 else 1
         sharpe = (avg_return / std_return) * (252 ** 0.5) if std_return > 0 else 0
@@ -516,6 +534,9 @@ class BrokerService:
                     "avg_pnl": round(np.mean([t.pnl_pct for t in b_trades]), 2),
                 }
 
+        # Trailing stop analysis (Part 6)
+        trailing_analysis = self._analyze_trailing_performance(trades)
+
         return {
             "total_trades": len(trades),
             "winning_trades": len(wins),
@@ -531,6 +552,77 @@ class BrokerService:
             "by_confidence": by_confidence,
             "by_grade": by_grade,
             "by_htf_bias": by_htf,
+            "trailing_stop": trailing_analysis,
+        }
+
+    def _analyze_trailing_performance(self, trades: list) -> dict:
+        """Analyze trailing stop effectiveness (Part 6 requirements)."""
+        if not trades:
+            return {
+                "pct_reached_1r": 0, "pct_reached_2r": 0, "pct_reached_3r": 0,
+                "breakeven_activated": 0, "trailing_activated": 0,
+                "avg_max_r": 0, "avg_realized_r": 0,
+                "exit_type_breakdown": {},
+            }
+
+        total = len(trades)
+
+        # R-level achievement rates
+        reached_1r = sum(1 for t in trades if (t.max_r_reached or 0) >= 1.0)
+        reached_2r = sum(1 for t in trades if (t.max_r_reached or 0) >= 2.0)
+        reached_3r = sum(1 for t in trades if (t.max_r_reached or 0) >= 3.0)
+
+        # Trailing activation counts
+        be_trades = [t for t in trades if t.moved_to_breakeven]
+        trail_trades = [t for t in trades if t.trailing_activated]
+
+        # Exit type breakdown
+        exit_types = {}
+        for t in trades:
+            reason = t.exit_reason or "unknown"
+            exit_types[reason] = exit_types.get(reason, 0) + 1
+
+        # Avg R metrics
+        avg_max_r = round(np.mean([t.max_r_reached or 0 for t in trades]), 2)
+        avg_realized_r = round(np.mean([t.realized_r or 0 for t in trades]), 2)
+
+        # Trailing exit analysis
+        trail_exits = [t for t in trades if t.exit_reason == "trailing_stop"]
+        avg_r_trail = round(np.mean([t.realized_r or 0 for t in trail_exits]), 2) if trail_exits else 0
+
+        # Breakeven exit analysis
+        be_exits = [t for t in trades if t.exit_reason == "breakeven"]
+
+        # Comparison: trades that reached 2R vs those that didn't
+        high_performers = [t for t in trades if (t.max_r_reached or 0) >= 2.0]
+        low_performers = [t for t in trades if (t.max_r_reached or 0) < 2.0]
+
+        comparison = {
+            "reached_2r_plus": {
+                "count": len(high_performers),
+                "avg_realized_r": round(np.mean([t.realized_r or 0 for t in high_performers]), 2) if high_performers else 0,
+                "trailing_exit_pct": round(len([t for t in high_performers if t.exit_reason == "trailing_stop"]) / len(high_performers) * 100, 1) if high_performers else 0,
+            },
+            "below_2r": {
+                "count": len(low_performers),
+                "avg_realized_r": round(np.mean([t.realized_r or 0 for t in low_performers]), 2) if low_performers else 0,
+                "stop_loss_pct": round(len([t for t in low_performers if t.exit_reason == "stop_loss"]) / len(low_performers) * 100, 1) if low_performers else 0,
+            },
+        }
+
+        return {
+            "pct_reached_1r": round(reached_1r / total * 100, 1),
+            "pct_reached_2r": round(reached_2r / total * 100, 1),
+            "pct_reached_3r": round(reached_3r / total * 100, 1),
+            "breakeven_activated": len(be_trades),
+            "trailing_activated": len(trail_trades),
+            "breakeven_exits": len(be_exits),
+            "trailing_exits": len(trail_exits),
+            "avg_max_r": avg_max_r,
+            "avg_realized_r": avg_realized_r,
+            "avg_r_on_trailing_exits": avg_r_trail,
+            "exit_type_breakdown": exit_types,
+            "comparison_2r": comparison,
         }
 
     # ------------------------------------------------------------------
@@ -538,57 +630,40 @@ class BrokerService:
     # ------------------------------------------------------------------
 
     def _save_state(self):
-        """Save state to JSON files."""
-        try:
-            orders_path = self.data_dir / "orders.json"
-            with open(orders_path, "w") as f:
-                json.dump([asdict(o) for o in self.orders[-500:]], f, indent=2, default=str)
+        """Save state to JSON files with file locking."""
+        orders_path = self.data_dir / "orders.json"
+        positions_path = self.data_dir / "positions.json"
+        trades_path = self.data_dir / "closed_trades.json"
+        ts_path = self.data_dir / "trailing_states.json"
 
-            positions_path = self.data_dir / "positions.json"
-            with open(positions_path, "w") as f:
-                json.dump({k: asdict(v) for k, v in self.positions.items()}, f, indent=2, default=str)
-
-            trades_path = self.data_dir / "closed_trades.json"
-            with open(trades_path, "w") as f:
-                json.dump([asdict(t) for t in self.closed_trades], f, indent=2, default=str)
-
-            # Persist trailing stop states so they survive restarts
-            ts_path = self.data_dir / "trailing_states.json"
-            with open(ts_path, "w") as f:
-                json.dump({k: v.to_dict() for k, v in self._trailing_states.items()}, f, indent=2)
-        except Exception as e:
-            logger.error("Failed to save broker state: %s", e)
+        save_json_file(orders_path, [asdict(o) for o in self.orders[-500:]])
+        save_json_file(positions_path, {k: asdict(v) for k, v in self.positions.items()})
+        save_json_file(trades_path, [asdict(t) for t in self.closed_trades])
+        save_json_file(ts_path, {k: v.to_dict() for k, v in self._trailing_states.items()})
 
     def _load_state(self):
-        """Load state from JSON files."""
-        try:
-            orders_path = self.data_dir / "orders.json"
-            if orders_path.exists():
-                with open(orders_path) as f:
-                    data = json.load(f)
-                    self.orders = [PaperOrder(**d) for d in data]
-                    self._order_counter = len(self.orders)
+        """Load state from JSON files with file locking."""
+        orders_path = self.data_dir / "orders.json"
+        positions_path = self.data_dir / "positions.json"
+        trades_path = self.data_dir / "closed_trades.json"
+        ts_path = self.data_dir / "trailing_states.json"
 
-            positions_path = self.data_dir / "positions.json"
-            if positions_path.exists():
-                with open(positions_path) as f:
-                    data = json.load(f)
-                    self.positions = {k: PaperPosition(**v) for k, v in data.items()}
+        orders_data = load_json_file(orders_path)
+        if orders_data is not None:
+            self.orders = [PaperOrder(**d) for d in orders_data]
+            self._order_counter = len(self.orders)
 
-            trades_path = self.data_dir / "closed_trades.json"
-            if trades_path.exists():
-                with open(trades_path) as f:
-                    data = json.load(f)
-                    self.closed_trades = [ClosedTrade(**d) for d in data]
+        positions_data = load_json_file(positions_path)
+        if positions_data is not None:
+            self.positions = {k: PaperPosition(**v) for k, v in positions_data.items()}
 
-            # Restore trailing stop states
-            ts_path = self.data_dir / "trailing_states.json"
-            if ts_path.exists():
-                with open(ts_path) as f:
-                    data = json.load(f)
-                    self._trailing_states = {
-                        k: TrailingStopState.from_dict(v) for k, v in data.items()
-                    }
-                logger.info("Restored %d trailing stop states", len(self._trailing_states))
-        except Exception as e:
-            logger.warning("Failed to load broker state: %s", e)
+        trades_data = load_json_file(trades_path)
+        if trades_data is not None:
+            self.closed_trades = [ClosedTrade(**d) for d in trades_data]
+
+        ts_data = load_json_file(ts_path)
+        if ts_data is not None:
+            self._trailing_states = {
+                k: TrailingStopState.from_dict(v) for k, v in ts_data.items()
+            }
+            logger.info("Restored %d trailing stop states", len(self._trailing_states))

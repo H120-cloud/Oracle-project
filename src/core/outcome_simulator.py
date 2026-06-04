@@ -11,7 +11,7 @@ Improvements over naive simulation:
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import yfinance as yf
@@ -141,7 +141,7 @@ class OutcomeSimulator:
             ticker = yf.Ticker(signal.ticker)
 
             # Get intraday data since signal was created
-            signal_age = datetime.utcnow() - signal.created_at
+            signal_age = datetime.now(timezone.utc).replace(tzinfo=None) - signal.created_at
             period = "5d" if signal_age.total_seconds() > 86400 else "1d"
 
             hist = ticker.history(period=period, interval="5m")
@@ -166,7 +166,7 @@ class OutcomeSimulator:
             # ── 2. Gap Detection ─────────────────────────────────────
             gap_result = self._check_gap_through_stop(hist, signal.created_at, stop_price)
             if gap_result is not None:
-                gap_pnl = ((gap_result - entry_price) / entry_price) * 100
+                gap_pnl = ((gap_result - entry_price) / entry_price) * 100 if entry_price else 0
                 logger.info(
                     "Gap detected for %s: opened at %.2f below stop %.2f",
                     signal.ticker, gap_result, stop_price,
@@ -179,12 +179,12 @@ class OutcomeSimulator:
             for _, bar in bars_after.iterrows():
                 # Check stop hit first (conservative — stop before target)
                 if bar["Low"] <= stop_price:
-                    pnl = ((stop_price - entry_price) / entry_price) * 100
+                    pnl = ((stop_price - entry_price) / entry_price) * 100 if entry_price else 0
                     return (OutcomeType.LOSS, pnl, prices)
 
                 # Check target hit
                 if bar["High"] >= target_price:
-                    pnl = ((target_price - entry_price) / entry_price) * 100
+                    pnl = ((target_price - entry_price) / entry_price) * 100 if entry_price else 0
                     return (OutcomeType.WIN, pnl, prices)
 
             # ── 3. Time Decay — expire stale signals ─────────────────
@@ -192,7 +192,7 @@ class OutcomeSimulator:
             if hours_old > MAX_SIGNAL_AGE_HOURS:
                 # Close at current price
                 current_price = float(hist["Close"].iloc[-1])
-                pnl = ((current_price - entry_price) / entry_price) * 100
+                pnl = ((current_price - entry_price) / entry_price) * 100 if entry_price else 0
                 logger.info(
                     "Time decay for %s: %.1f hours old, closing at %.2f (pnl=%.2f%%)",
                     signal.ticker, hours_old, current_price, pnl,

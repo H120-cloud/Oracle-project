@@ -16,7 +16,7 @@ class ISelfLearner(ABC):
     """Interface for self-learning system (V4)."""
 
     @abstractmethod
-    def record_outcome(self, signal_id: str, predicted: float, actual: float) -> None:
+    def record_outcome(self, signal_id: str, _predicted: float, actual: float) -> None:
         """Record a prediction vs actual outcome for learning."""
         ...
 
@@ -39,7 +39,7 @@ class ISelfLearner(ABC):
 class SelfLearnerStub(ISelfLearner):
     """No-op implementation for V1."""
 
-    def record_outcome(self, signal_id: str, predicted: float, actual: float) -> None:
+    def record_outcome(self, signal_id: str, _predicted: float, actual: float) -> None:
         raise NotImplementedError("Self-learning not available until V4")
 
     def adjust_thresholds(self) -> dict:

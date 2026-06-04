@@ -9,7 +9,7 @@ Detects and alerts on meaningful HTF context changes:
 import logging
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from src.models.schemas import WatchlistItem, TradingSignal
@@ -100,7 +100,7 @@ class HTFAlertService:
             'alignment': item.latest_alignment_status,
             'strength': item.latest_htf_strength_score,
             'blocked': item.latest_htf_blocked,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         }
     
     def _extract_state_from_result(self, htf_result) -> dict:
@@ -149,7 +149,7 @@ class HTFAlertService:
                 previous_strength=previous.get('strength'),
                 new_strength=current.get('strength'),
                 explanation=f"{ticker} is now HTF blocked due to bearish daily context",
-                timestamp=datetime.now().isoformat(),
+                timestamp=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
                 severity="warning"
             )
         
@@ -165,7 +165,7 @@ class HTFAlertService:
                 previous_strength=previous.get('strength'),
                 new_strength=current.get('strength'),
                 explanation=f"{ticker} is now HTF favorable (bullish alignment)",
-                timestamp=datetime.now().isoformat(),
+                timestamp=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
                 severity="info"
             )
         
@@ -197,7 +197,7 @@ class HTFAlertService:
             previous_strength=prev.get('strength'),
             new_strength=curr.get('strength'),
             explanation=explanation,
-            timestamp=datetime.now().isoformat(),
+            timestamp=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             severity=severity
         )
     
@@ -226,7 +226,7 @@ class HTFAlertService:
             previous_strength=prev.get('strength'),
             new_strength=curr.get('strength'),
             explanation=explanation,
-            timestamp=datetime.now().isoformat(),
+            timestamp=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             severity=severity
         )
     
@@ -266,7 +266,7 @@ class HTFAlertService:
             previous_strength=prev_strength,
             new_strength=curr_strength,
             explanation=explanation,
-            timestamp=datetime.now().isoformat(),
+            timestamp=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             severity=severity
         )
     

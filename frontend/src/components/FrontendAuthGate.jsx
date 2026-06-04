@@ -6,13 +6,15 @@ import {
   setFrontendSessionToken,
 } from '../api_shared'
 import {
+  getFrontendAuthSession,
   requestFrontendAuthCode,
   verifyFrontendAuthCode,
 } from '../api_strategic'
 
 export default function FrontendAuthGate({ children }) {
   const authDisabled = import.meta.env.VITE_ORACLE_FRONTEND_AUTH_ENABLED === 'false'
-  const [authenticated, setAuthenticated] = useState(authDisabled || Boolean(getFrontendSessionToken()))
+  const [authenticated, setAuthenticated] = useState(authDisabled)
+  const [checkingSession, setCheckingSession] = useState(!authDisabled)
   const [code, setCode] = useState('')
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
@@ -25,7 +27,59 @@ export default function FrontendAuthGate({ children }) {
     return () => window.removeEventListener('oracle-auth-expired', handleExpired)
   }, [])
 
+  useEffect(() => {
+    if (authDisabled) return
+
+    const token = getFrontendSessionToken()
+    if (!token) {
+      setCheckingSession(false)
+      return
+    }
+
+    let cancelled = false
+    getFrontendAuthSession()
+      .then((result) => {
+        if (cancelled) return
+        if (result?.authenticated) {
+          setAuthenticated(true)
+        } else {
+          clearFrontendSessionToken()
+          setAuthenticated(false)
+        }
+      })
+      .catch(() => {
+        if (cancelled) return
+        clearFrontendSessionToken()
+        setAuthenticated(false)
+      })
+      .finally(() => {
+        if (!cancelled) setCheckingSession(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [authDisabled])
+
   if (authenticated) return children
+
+  if (checkingSession) {
+    return (
+      <main className="min-h-screen bg-gray-950 text-white flex items-center justify-center px-4">
+        <section className="w-full max-w-md rounded-lg border border-gray-800 bg-gray-900 p-6 shadow-2xl">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-oracle-600/20 text-oracle-400">
+              <LockKeyhole className="h-6 w-6" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight">Oracle Access</h1>
+              <p className="text-sm text-gray-400">Checking secure session...</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    )
+  }
 
   const requestCode = async () => {
     setSending(true)

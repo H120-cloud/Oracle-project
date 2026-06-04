@@ -9,6 +9,9 @@ export const verifyFrontendAuthCode = (code) =>
     body: JSON.stringify({ code }),
   });
 
+export const getFrontendAuthSession = () =>
+  fetchJSON(`${BASE}/auth/session`);
+
 export const getFinvizNews = ({ forceRefresh = false } = {}) =>
   fetchJSON(`${BASE}/news/finviz${forceRefresh ? '?force_refresh=true' : ''}`);
 

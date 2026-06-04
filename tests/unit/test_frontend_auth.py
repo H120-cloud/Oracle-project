@@ -114,3 +114,12 @@ def test_fetch_json_attaches_frontend_session_token():
     assert "Authorization" in source
     assert "Bearer" in source
     assert "oracle-auth-expired" in source
+
+
+def test_frontend_gate_validates_token_before_rendering_children():
+    source = open("frontend/src/components/FrontendAuthGate.jsx", encoding="utf-8").read()
+
+    assert "getFrontendAuthSession" in source
+    assert "checkingSession" in source
+    assert "setAuthenticated(true)" in source
+    assert "clearFrontendSessionToken()" in source

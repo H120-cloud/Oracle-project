@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
+from fastapi import Header
 from pydantic import BaseModel, Field
 
 from src.services.frontend_auth import frontend_auth_service
@@ -25,6 +26,10 @@ class VerifyCodeRequest(BaseModel):
 class VerifyCodeResponse(BaseModel):
     token: str
     expires_in_seconds: int
+
+
+class SessionStatusResponse(BaseModel):
+    authenticated: bool
 
 
 @router.post("/request-code", response_model=RequestCodeResponse)
@@ -55,6 +60,13 @@ async def verify_frontend_code(payload: VerifyCodeRequest):
     if not token:
         raise HTTPException(status_code=401, detail="Invalid or expired login code")
     return VerifyCodeResponse(token=token, expires_in_seconds=frontend_auth_service.session_ttl_seconds)
+
+
+@router.get("/session", response_model=SessionStatusResponse)
+async def frontend_session_status(authorization: str = Header(default="")):
+    scheme, _, token = authorization.partition(" ")
+    authenticated = scheme.lower() == "bearer" and frontend_auth_service.verify_token(token)
+    return SessionStatusResponse(authenticated=authenticated)
 
 
 @router.post("/logout")

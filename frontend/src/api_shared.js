@@ -1,6 +1,19 @@
 export const BASE = '/api/v1';
 
 export const DEFAULT_TIMEOUT_MS = 60_000;
+export const ORACLE_FRONTEND_SESSION_TOKEN = 'ORACLE_FRONTEND_SESSION_TOKEN';
+
+export function getFrontendSessionToken() {
+  return sessionStorage.getItem(ORACLE_FRONTEND_SESSION_TOKEN);
+}
+
+export function setFrontendSessionToken(token) {
+  sessionStorage.setItem(ORACLE_FRONTEND_SESSION_TOKEN, token);
+}
+
+export function clearFrontendSessionToken() {
+  sessionStorage.removeItem(ORACLE_FRONTEND_SESSION_TOKEN);
+}
 
 export async function fetchJSON(url, options = {}) {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, signal: externalSignal, ...rest } = options;
@@ -15,12 +28,24 @@ export async function fetchJSON(url, options = {}) {
   }
 
   try {
+    const token = getFrontendSessionToken();
+    const headers = { 'Content-Type': 'application/json', ...rest.headers };
+    if (token && !headers.Authorization) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
     const res = await fetch(url, {
-      headers: { 'Content-Type': 'application/json', ...rest.headers },
+      headers,
       ...rest,
       signal: controller.signal,
     });
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      if (res.status === 401 && token) {
+        clearFrontendSessionToken();
+        window.dispatchEvent(new CustomEvent('oracle-auth-expired'));
+      }
+      throw new Error(`${res.status} ${res.statusText}`);
+    }
     return res.json();
   } catch (err) {
     if (err.name === 'AbortError' || err.name === 'TimeoutError') {

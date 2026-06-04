@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     app_debug: bool = True
     app_host: str = "0.0.0.0"
     app_port: int = 8000
+    oracle_frontend_auth_enabled: bool = True
 
     # Market Data
     market_data_provider: str = "yfinance"

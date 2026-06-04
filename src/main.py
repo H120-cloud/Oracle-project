@@ -28,11 +28,12 @@ from fastapi.staticfiles import StaticFiles
 from src.config import get_settings
 from src.models.database import Base
 from src.db.session import engine, SessionLocal
-from src.api.routes import health, news, agentic, pre_news, historical_training, news_momentum, sec_intelligence
+from src.api.routes import health, news, agentic, pre_news, historical_training, news_momentum, sec_intelligence, frontend_auth
 from src.core.agentic.news_momentum_orchestrator import NewsMomentumOrchestrator
 from src.core.agentic.pre_news_detector import PreNewsDetector
 from src.core.agentic.pre_news_evaluator import PreNewsEvaluator
 from src.core.agentic.pre_news_validation import PreNewsValidationTracker, _week_key
+from src.middleware.frontend_auth import FrontendAuthMiddleware
 from src.services.telegram_command_handler import telegram_command_polling_loop
 from src.services.telegram_service import send_telegram_alert, telegram_outbox_sender_loop
 
@@ -1445,6 +1446,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(
+    FrontendAuthMiddleware,
+    enabled=get_settings().oracle_frontend_auth_enabled,
+)
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
@@ -1468,6 +1473,7 @@ def _include_optional_legacy_router(module_name: str, *, prefix: str = "/api/v1"
 
 
 app.include_router(health.router)
+app.include_router(frontend_auth.router, prefix="/api/v1")
 if _route_settings.scanner_routes_enabled:
     _include_optional_legacy_router("src.api.routes.scanner")
 if _route_settings.legacy_signals_enabled:

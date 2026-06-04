@@ -1,5 +1,14 @@
 import { BASE, fetchJSON } from './api_shared';
 
+export const requestFrontendAuthCode = () =>
+  fetchJSON(`${BASE}/auth/request-code`, { method: 'POST' });
+
+export const verifyFrontendAuthCode = (code) =>
+  fetchJSON(`${BASE}/auth/verify-code`, {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+
 export const getFinvizNews = ({ forceRefresh = false } = {}) =>
   fetchJSON(`${BASE}/news/finviz${forceRefresh ? '?force_refresh=true' : ''}`);
 

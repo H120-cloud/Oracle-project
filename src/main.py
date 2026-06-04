@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from src.config import get_settings
 from src.models.database import Base
 from src.db.session import engine, SessionLocal
-from src.api.routes import health, news, agentic, pre_news, historical_training, news_momentum, sec_intelligence, frontend_auth
+from src.api.routes import health, news, agentic, pre_news, historical_training, news_momentum, sec_intelligence, frontend_auth, timing_reviews
 from src.core.agentic.news_momentum_orchestrator import NewsMomentumOrchestrator
 from src.core.agentic.pre_news_detector import PreNewsDetector
 from src.core.agentic.pre_news_evaluator import PreNewsEvaluator
@@ -1027,6 +1027,9 @@ async def _news_momentum_scan_loop():
                         by_source[getattr(item, "source", "WireNews") or "WireNews"] = by_source.get(getattr(item, "source", "WireNews") or "WireNews", 0) + 1
                     for source, count in by_source.items():
                         _source_health.record_fetch(source, count, now=datetime.now(timezone.utc))
+                    for source, count in getattr(wire_summary, "failed_sources", {}).items():
+                        for _ in range(int(count or 0)):
+                            _source_health.record_parse_error(source, now=datetime.now(timezone.utc))
                     all_items.extend(wire_items)
                 except Exception as exc:
                     _source_health.record_parse_error("WireNews", now=datetime.now(timezone.utc))
@@ -1602,6 +1605,7 @@ app.include_router(agentic.router, prefix="/api/v1")  # V11: Agentic Catalyst Mo
 app.include_router(pre_news.router, prefix="/api/v1")  # Pre-News Volume Anomaly Detector
 app.include_router(historical_training.router, prefix="/api/v1")  # Historical Catalyst Training Engine
 app.include_router(news_momentum.router, prefix="/api/v1")  # V22: News Momentum Intelligence System
+app.include_router(timing_reviews.router, prefix="/api/v1")  # Timing Intelligence reviews
 app.include_router(sec_intelligence.router, prefix="/api/v1")  # V23: SEC Filing Intelligence & Dilution Risk Engine
 
 

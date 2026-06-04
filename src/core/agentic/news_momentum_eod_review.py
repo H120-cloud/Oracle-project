@@ -88,6 +88,7 @@ class NewsMomentumEODReviewer:
             "caught": [],
             "summary": {},
         }
+        timing_review_items: list[dict] = []
 
         for mover in big_movers:
             tk = mover.ticker.upper()
@@ -105,6 +106,10 @@ class NewsMomentumEODReviewer:
                     "volume": mover.volume,
                     "reason": "no news event registered for ticker today",
                 })
+                timing_review_items.append({
+                    "event_type": "missed_discovery",
+                    "mover": mover,
+                })
                 logger.info("EOD: MISSED_DISCOVERY %s (+%.1f%%)", tk, change)
                 continue
 
@@ -116,11 +121,21 @@ class NewsMomentumEODReviewer:
                     "headline": matching.headline[:80],
                     "alert_score": matching.news_impact_score,
                 })
+                timing_review_items.append({
+                    "event_type": "alerted",
+                    "candidate": matching,
+                    "mover": mover,
+                })
                 logger.info("EOD: CAUGHT %s (+%.1f%%) - alerted", tk, change)
             else:
                 # Saw it but didn't alert — use existing missed_learning to analyze why
                 analysis = self._analyze_missed_alert(matching, mover)
                 results["missed_alert"].append(analysis)
+                timing_review_items.append({
+                    "event_type": "blocked",
+                    "candidate": matching,
+                    "mover": mover,
+                })
                 logger.info(
                     "EOD: MISSED_ALERT %s (+%.1f%%) - reason: %s",
                     tk, change, analysis.get("primary_reason", "unknown")
@@ -144,6 +159,7 @@ class NewsMomentumEODReviewer:
 
         # Persist
         self._save_report(results)
+        self._save_timing_reviews(today, timing_review_items)
         self._last_report_date = today
 
         logger.info(
@@ -158,6 +174,25 @@ class NewsMomentumEODReviewer:
         await self._send_summary_telegram(results)
 
         return results
+
+    def _save_timing_reviews(self, review_date: str, items: list[dict]) -> None:
+        if not items:
+            return
+        try:
+            from src.db.session import SessionLocal
+            from src.core.agentic.timing_intelligence import TimingReviewService
+
+            db = SessionLocal()
+            try:
+                rows = TimingReviewService(db).record_eod_reviews(
+                    review_date=review_date,
+                    items=items,
+                )
+                logger.info("EOD timing review: persisted %d rows", len(rows))
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("EOD timing review persistence failed: %s", exc)
 
     def _analyze_missed_alert(self, candidate, mover) -> Dict:
         """Analyze why a discovered candidate did not trigger an alert."""

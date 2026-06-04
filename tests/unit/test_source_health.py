@@ -42,3 +42,15 @@ def test_stale_source_triggers_warning():
     assert len(warnings) == 1
     assert "source stale" in warnings[0]
 
+
+def test_repeated_parse_errors_surface_in_health_evaluation():
+    now = datetime(2026, 6, 4, tzinfo=timezone.utc)
+    tracker = SourceHealthTracker(parse_error_threshold=2)
+
+    tracker.record_parse_error("BusinessWire", now=now)
+    tracker.record_parse_error("BusinessWire", now=now + timedelta(seconds=10))
+
+    warnings = tracker.evaluate(now=now + timedelta(seconds=20))
+
+    assert len(warnings) == 1
+    assert "BusinessWire parser errors" in warnings[0]

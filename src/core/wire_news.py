@@ -192,6 +192,7 @@ class WireNewsScraper:
             return self._cache
 
         items: list[FinvizNewsItem] = []
+        failed_sources: dict[str, int] = {}
         async with httpx.AsyncClient(headers=HEADERS, timeout=self.timeout, follow_redirects=True) as client:
             for source in self.sources:
                 for url in _feed_urls_for(source):
@@ -203,6 +204,7 @@ class WireNewsScraper:
                         if parsed:
                             break
                     except Exception as exc:
+                        failed_sources[source] = failed_sources.get(source, 0) + 1
                         logger.debug("%s feed fetch failed (%s): %s", source, url, exc)
         logger.info("WireNews: fetched %d tickered items", len(items))
         summary = FinvizNewsSummary(
@@ -210,6 +212,7 @@ class WireNewsScraper:
             blog_items=[],
             last_updated=datetime.now(timezone.utc),
         )
+        summary.failed_sources = failed_sources  # type: ignore[attr-defined]
         self._cache = summary
         self._cache_time = now
         return summary

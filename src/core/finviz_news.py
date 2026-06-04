@@ -82,6 +82,7 @@ class FinvizNewsSummary:
     news_items: List[FinvizNewsItem] = field(default_factory=list)
     blog_items: List[FinvizNewsItem] = field(default_factory=list)
     last_updated: Optional[datetime] = None
+    failed_sources: dict[str, int] = field(default_factory=dict)
     
     def to_dict(self):
         return {
@@ -89,6 +90,7 @@ class FinvizNewsSummary:
             "blogs": [b.to_dict() for b in self.blog_items],
             "last_updated": self.last_updated.isoformat() if self.last_updated else None,
             "count": len(self.news_items) + len(self.blog_items),
+            "failed_sources": self.failed_sources,
         }
 
 

@@ -22,6 +22,7 @@ import difflib
 import hashlib
 import logging
 import os
+import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
@@ -148,6 +149,22 @@ _HARD_NEGATIVE_KW = (
     "terminated", "misses", "missed", "decline", "declines",
     "falls", "down", "loss", "losses", "warning", "guides down",
 )
+_RETROSPECTIVE_MOVE_RE = re.compile(
+    r"("
+    r"\b(?:[A-Z]{1,6}\s+)?(shares?|stock)\s+"
+    r"(surges?|soars?|jumps?|rall(?:y|ies)|gains?|rises?|climbs?|advances?)\b"
+    r"|"
+    r"\b(surges?|soars?|jumps?|rall(?:y|ies)|gains?|rises?|climbs?|advances?)\s+"
+    r"(after|as|on|following)\b"
+    r"|"
+    r"\bdrives?\s+(?:\d+(?:\.\d+)?%\s+)?[A-Z]{1,6}\s+"
+    r"(?:surge|rally|jump|gain|rise|climb|advance)\b"
+    r"|"
+    r"\b(?:\d+(?:\.\d+)?%)\s+[A-Z]{1,6}\s+"
+    r"(?:surge|rally|jump|gain|rise|climb|advance)\b"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _headline_is_fresh_bullish(headline: str, is_negative: bool,
@@ -163,6 +180,11 @@ def _headline_is_fresh_bullish(headline: str, is_negative: bool,
     if not any(kw in hl for kw in _STRONG_POSITIVE_KW):
         return False
     return (not is_negative) and (trap_risk or 0.0) < 70.0 and (dilution_risk or 0.0) < 70.0
+
+
+def _is_late_reaction_headline(headline: str) -> bool:
+    """True when the headline is mainly reporting a move that already happened."""
+    return bool(_RETROSPECTIVE_MOVE_RE.search(headline or ""))
 
 
 def _compute_stacking_score(c) -> tuple[int, list]:
@@ -683,16 +705,26 @@ class NewsMomentumOrchestrator:
         """Drop inactive candidates older than max_age_hours; cap total list size."""
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(hours=max_age_hours)
+        news_age_cutoff = None
+        if self.config.news_max_age_hours:
+            news_age_cutoff = now - timedelta(hours=float(self.config.news_max_age_hours))
         before = len(self._candidates)
 
         kept = []
         for c in self._candidates:
-            # Always keep active candidates
+            published = _aware_utc(c.published_at)
+            detected = _aware_utc(c.detected_at) if c.detected_at else now
+            if c.is_active and (
+                (published is not None and news_age_cutoff is not None and published < news_age_cutoff)
+                or detected < cutoff
+            ):
+                c.is_active = False
+
+            # Keep active candidates that are still within freshness windows.
             if c.is_active:
                 kept.append(c)
                 continue
             # Keep recent inactive (for missed-winner / EOD analysis)
-            detected = _aware_utc(c.detected_at) if c.detected_at else now
             if detected >= cutoff:
                 kept.append(c)
 
@@ -705,7 +737,8 @@ class NewsMomentumOrchestrator:
         self._candidates = kept
         self._candidate_by_ticker = {}
         for c in sorted(kept, key=lambda c: _aware_utc(c.detected_at) or now):
-            self._candidate_by_ticker[c.ticker] = c
+            if c.is_active:
+                self._candidate_by_ticker[c.ticker] = c
 
         # Prune cooldown dicts and event registry
         cooldown_cutoff = now - timedelta(hours=max_age_hours)
@@ -1695,6 +1728,17 @@ class NewsMomentumOrchestrator:
                     c._block_reason = f"stale({age_hours:.1f}h)"  # type: ignore[attr-defined]
                     return False
 
+        published_at_for_stale_guard = _aware_utc(c.published_at)
+        if published_at_for_stale_guard and self.config.news_max_age_hours:
+            published_age_hours = (now - published_at_for_stale_guard).total_seconds() / 3600
+            if published_age_hours > float(self.config.news_max_age_hours):
+                logger.info(
+                    "Telegram gate: %s stale published_at (%.1fh > %.1fh)",
+                    c.ticker, published_age_hours, float(self.config.news_max_age_hours),
+                )
+                c._block_reason = f"stale_published({published_age_hours:.1f}h)"  # type: ignore[attr-defined]
+                return False
+
         flash_assessment = assess_bullish_flash(c, self.config, now=now)
         bullish_flash = flash_assessment.should_flash
         if bullish_flash:
@@ -1824,6 +1868,21 @@ class NewsMomentumOrchestrator:
             min_return = min(min_return, self.config.first_mover_min_return)
             min_cont = min(min_cont, self.config.first_mover_min_continuation)
             min_multi = min(min_multi, self.config.first_mover_min_multi_day)
+
+        if (
+            (not bullish_flash)
+            and (not first_mover)
+            and c.move_pct is not None
+            and c.move_pct >= 10.0
+            and _is_late_reaction_headline(c.headline)
+        ):
+            logger.info(
+                "Telegram gate: %s late reaction headline suppressed "
+                "(move=%.1f%% headline=%s)",
+                c.ticker, c.move_pct or 0.0, c.headline,
+            )
+            c._block_reason = "late_reaction_headline"  # type: ignore[attr-defined]
+            return False
 
         # ── PRICE-ACTION BREAKOUT OVERRIDE (V23.2) ───────────────────────
         # The market is the ultimate catalyst classifier. If a stock is moving

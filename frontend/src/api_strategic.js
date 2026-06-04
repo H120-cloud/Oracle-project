@@ -281,6 +281,28 @@ export const newsMomentumMissedWinners = (limit = 50) =>
 export const newsMomentumMissedWinnersReport = () =>
   fetchJSON(`${BASE}/news-momentum/missed-winners/report`);
 
+export const newsMomentumTimingReviews = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.ticker) qs.append('ticker', params.ticker);
+  if (params.label) qs.append('label', params.label);
+  if (params.source_system) qs.append('source_system', params.source_system);
+  if (params.event_type) qs.append('event_type', params.event_type);
+  if (params.date_from) qs.append('date_from', params.date_from);
+  if (params.date_to) qs.append('date_to', params.date_to);
+  qs.append('limit', String(params.limit || 250));
+  return fetchJSON(`${BASE}/news-momentum/timing-reviews?${qs.toString()}`);
+};
+
+export const newsMomentumTimingSummary = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.ticker) qs.append('ticker', params.ticker);
+  if (params.source_system) qs.append('source_system', params.source_system);
+  if (params.event_type) qs.append('event_type', params.event_type);
+  if (params.date_from) qs.append('date_from', params.date_from);
+  if (params.date_to) qs.append('date_to', params.date_to);
+  return fetchJSON(`${BASE}/news-momentum/timing-reviews/summary?${qs.toString()}`);
+};
+
 export const newsMomentumUpdateMissedStatus = (recordId, status) =>
   fetchJSON(`${BASE}/news-momentum/missed-winners/${recordId}/status`, {
     method: 'POST',

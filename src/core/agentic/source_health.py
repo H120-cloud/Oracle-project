@@ -43,10 +43,12 @@ class SourceHealthTracker:
         self,
         *,
         missing_timestamp_rate_threshold: float = 0.35,
+        parse_error_threshold: int = 3,
         stale_after_seconds: int = 900,
         warning_cooldown_seconds: int = 900,
     ) -> None:
         self.missing_timestamp_rate_threshold = missing_timestamp_rate_threshold
+        self.parse_error_threshold = max(1, int(parse_error_threshold or 1))
         self.stale_after = timedelta(seconds=stale_after_seconds)
         self.warning_cooldown = timedelta(seconds=warning_cooldown_seconds)
         self._snapshots: Dict[str, SourceHealthSnapshot] = {}
@@ -66,7 +68,6 @@ class SourceHealthTracker:
     def record_parse_error(self, source: str, *, now: Optional[datetime] = None) -> None:
         snap = self.snapshot(source)
         snap.parse_error_count += 1
-        self._maybe_warn(snap, f"{source} parser error recorded", now or _now())
 
     def record_missing_timestamp(self, source: str, count: int = 1) -> None:
         self.snapshot(source).missing_timestamp_count += max(0, int(count or 0))
@@ -116,6 +117,14 @@ class SourceHealthTracker:
             if snap.last_successful_parse_time and now - snap.last_successful_parse_time >= self.stale_after:
                 age = int((now - snap.last_successful_parse_time).total_seconds())
                 warning = f"{snap.source} source stale for {age}s"
+                if self._maybe_warn(snap, warning, now):
+                    warnings.append(warning)
+
+            if snap.parse_error_count >= self.parse_error_threshold:
+                warning = (
+                    f"{snap.source} parser errors reached {snap.parse_error_count} "
+                    f"(threshold={self.parse_error_threshold})"
+                )
                 if self._maybe_warn(snap, warning, now):
                     warnings.append(warning)
         return warnings

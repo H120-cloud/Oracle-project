@@ -3,6 +3,7 @@ import { Routes, Route, NavLink, Navigate } from 'react-router-dom'
 import {
   Activity,
   Brain,
+  Clock,
   Newspaper,
   Rocket,
   Zap,
@@ -12,10 +13,12 @@ import Agentic from './pages/Agentic'
 import HistoricalTraining from './pages/HistoricalTraining'
 import NewsMomentum from './pages/NewsMomentum'
 import SECIntelligence from './pages/SECIntelligence'
+import TimingReview from './pages/TimingReview'
 import FrontendAuthGate from './components/FrontendAuthGate'
 
 const NAV = [
   { to: '/news-momentum', icon: Rocket, label: 'News Momentum' },
+  { to: '/timing-review', icon: Clock, label: 'Timing Review' },
   { to: '/agentic', icon: Zap, label: 'Agentic / Pre-News' },
   { to: '/sec-intelligence', icon: Brain, label: 'SEC Intelligence' },
   { to: '/historical-training', icon: Brain, label: 'Historical Training' },
@@ -71,6 +74,7 @@ export default function App() {
               <Route path="/news" element={<News />} />
               <Route path="/agentic" element={<Agentic />} />
               <Route path="/news-momentum" element={<NewsMomentum />} />
+              <Route path="/timing-review" element={<TimingReview />} />
               <Route path="/sec-intelligence" element={<SECIntelligence />} />
               <Route path="/historical-training" element={<HistoricalTraining />} />
               <Route path="*" element={<Navigate to="/news-momentum" replace />} />

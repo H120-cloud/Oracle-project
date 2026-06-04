@@ -92,6 +92,48 @@ def test_missing_published_at_does_not_get_first_mover_boost():
     assert candidate.freshness_confidence == "LOW"
 
 
+def test_recap_headline_after_move_is_blocked_as_late_reaction():
+    orch = _minimal_gate_orchestrator()
+    candidate = _candidate("FJET")
+    now = datetime.now(timezone.utc)
+    candidate.headline = "Russell 3000 inclusion announcement drives 16% FJET surge"
+    candidate.published_at = now - timedelta(minutes=30)
+    candidate.detected_at = now - timedelta(minutes=2)
+    candidate.catalyst_category = CatalystCategory.CORPORATE
+    candidate.catalyst_sub_type = CatalystSubType.STRATEGIC_REVIEW
+    candidate.news_impact_score = 90.0
+    candidate.expected_return_score = 90.0
+    candidate.continuation_probability = 80.0
+    candidate.move_pct = 16.0
+    candidate.rvol = 5.0
+    candidate.trap_risk = 0.0
+    candidate.dilution_risk = 0.0
+
+    assert orch._should_send_telegram_impl(candidate, adaptive={}) is False
+    assert candidate._block_reason == "late_reaction_headline"
+
+
+def test_stock_rises_after_recap_headline_is_blocked_as_late_reaction():
+    orch = _minimal_gate_orchestrator()
+    candidate = _candidate("RECAP")
+    now = datetime.now(timezone.utc)
+    candidate.headline = "RECAP stock rises 18% after Russell inclusion news"
+    candidate.published_at = now - timedelta(minutes=20)
+    candidate.detected_at = now - timedelta(minutes=1)
+    candidate.catalyst_category = CatalystCategory.CORPORATE
+    candidate.catalyst_sub_type = CatalystSubType.STRATEGIC_REVIEW
+    candidate.news_impact_score = 90.0
+    candidate.expected_return_score = 90.0
+    candidate.continuation_probability = 80.0
+    candidate.move_pct = 18.0
+    candidate.rvol = 5.0
+    candidate.trap_risk = 0.0
+    candidate.dilution_risk = 0.0
+
+    assert orch._should_send_telegram_impl(candidate, adaptive={}) is False
+    assert candidate._block_reason == "late_reaction_headline"
+
+
 def test_scan_sends_fresh_candidates_before_refreshing_old_candidates(monkeypatch):
     orch = object.__new__(NewsMomentumOrchestrator)
     orch.config = NewsMomentumConfig(learning_enabled=False)
@@ -424,6 +466,26 @@ def test_gate_blocks_stale_high_conviction_after_spike(monkeypatch):
     assert getattr(candidate, "_block_reason", "") == "late_chase(140.0%)"
 
 
+def test_gate_blocks_candidate_when_original_publication_is_stale(monkeypatch):
+    orch = _gate_orchestrator(monkeypatch)
+    now = datetime.now(timezone.utc)
+    candidate = _candidate("OLDPUB")
+    candidate.headline = "OLDPUB announces major partnership"
+    candidate.catalyst_category = CatalystCategory.CORPORATE
+    candidate.catalyst_sub_type = CatalystSubType.MAJOR_PARTNERSHIP
+    candidate.current_price = 5.60
+    candidate.prior_price = 5.00
+    candidate.move_pct = 12.0
+    candidate.news_impact_score = 85.0
+    candidate.expected_return_score = 85.0
+    candidate.continuation_probability = 85.0
+    candidate.published_at = now - timedelta(hours=13)
+    candidate.detected_at = now - timedelta(minutes=5)
+
+    assert orch._should_send_telegram(candidate, adaptive={}) is False
+    assert getattr(candidate, "_block_reason", "") == "stale_published(13.0h)"
+
+
 def test_gate_allows_recent_high_conviction_before_late_chase(monkeypatch):
     orch = _gate_orchestrator(monkeypatch)
     now = datetime.now(timezone.utc)
@@ -441,6 +503,33 @@ def test_gate_allows_recent_high_conviction_before_late_chase(monkeypatch):
     candidate.detected_at = now - timedelta(minutes=2)
 
     assert orch._should_send_telegram(candidate, adaptive={}) is True
+
+
+def test_prune_deactivates_stale_active_candidates_and_excludes_inactive_index():
+    orch = object.__new__(NewsMomentumOrchestrator)
+    orch.config = NewsMomentumConfig(learning_enabled=False, news_max_age_hours=12.0)
+    now = datetime.now(timezone.utc)
+    stale = _candidate("STALE")
+    stale.published_at = now - timedelta(hours=14)
+    stale.detected_at = now - timedelta(hours=1)
+    stale.is_active = True
+    fresh = _candidate("FRESH")
+    fresh.published_at = now - timedelta(minutes=10)
+    fresh.detected_at = now - timedelta(minutes=5)
+    fresh.is_active = True
+    inactive_recent = _candidate("OLD")
+    inactive_recent.published_at = now - timedelta(minutes=20)
+    inactive_recent.detected_at = now - timedelta(minutes=15)
+    inactive_recent.is_active = False
+    orch._candidates = [stale, fresh, inactive_recent]
+    orch._candidate_by_ticker = {c.ticker: c for c in orch._candidates}
+
+    orch._prune_old_candidates(max_age_hours=48, max_total=500)
+
+    assert stale.is_active is False
+    assert "STALE" not in orch._candidate_by_ticker
+    assert "OLD" not in orch._candidate_by_ticker
+    assert orch._candidate_by_ticker == {"FRESH": fresh}
 
 
 def _gate_orchestrator(monkeypatch):

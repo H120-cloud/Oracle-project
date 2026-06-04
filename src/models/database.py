@@ -209,3 +209,47 @@ class CustomAlert(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=True)
+
+
+class AlertTimingReview(Base):
+    """Observe-only EOD timing review for news/pre-news/rocket candidates."""
+
+    __tablename__ = "alert_timing_reviews"
+
+    id = Column(String(36), primary_key=True, default=_new_uuid)
+    review_date = Column(String(10), nullable=False, index=True)
+    ticker = Column(String(16), nullable=False, index=True)
+    source_system = Column(String(40), nullable=False, index=True)
+    event_type = Column(String(40), nullable=False, index=True)
+    timing_label = Column(String(40), nullable=False, index=True)
+
+    headline = Column(Text, nullable=True)
+    source = Column(String(80), nullable=True)
+    catalyst_category = Column(String(80), nullable=True)
+    catalyst_sub_type = Column(String(80), nullable=True)
+    primary_issue = Column(String(120), nullable=True)
+    notes = Column(Text, nullable=True)
+
+    published_at = Column(DateTime, nullable=True)
+    detected_at = Column(DateTime, nullable=True)
+    alerted_at = Column(DateTime, nullable=True)
+    reviewed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    price_at_detection = Column(Float, nullable=True)
+    price_at_alert = Column(Float, nullable=True)
+    price_before_alert = Column(Float, nullable=True)
+    price_eod = Column(Float, nullable=True)
+    high_after_alert_15m = Column(Float, nullable=True)
+    high_after_alert_1h = Column(Float, nullable=True)
+    high_after_alert_4h = Column(Float, nullable=True)
+    high_after_alert_1d = Column(Float, nullable=True)
+
+    move_before_alert_pct = Column(Float, nullable=True)
+    move_after_alert_pct = Column(Float, nullable=True)
+    max_after_alert_pct = Column(Float, nullable=True)
+    volume = Column(Float, nullable=True)
+
+    news_impact_score = Column(Float, nullable=True)
+    expected_return_score = Column(Float, nullable=True)
+    continuation_probability = Column(Float, nullable=True)
+    feature_snapshot = Column(JSON, nullable=True)

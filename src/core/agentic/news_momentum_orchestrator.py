@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import hashlib
 import logging
 import os
 from datetime import datetime, timezone, timedelta
@@ -80,7 +81,7 @@ from src.core.agentic.sec_filing_models import (
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+DATA_DIR = Path(os.environ.get("AGENTIC_DATA_DIR", "data/agentic"))
 CANDIDATES_FILE = DATA_DIR / "news_momentum_candidates.json"
 
 # Catalyst sub-types historically printing > 40% win rate. Used both by the
@@ -214,6 +215,7 @@ CONFIG_FILE = DATA_DIR / "news_momentum_config.json"
 COOLDOWN_FILE = DATA_DIR / "news_momentum_cooldowns.json"
 HEADLINE_COOLDOWN_FILE = DATA_DIR / "news_momentum_headline_cooldowns.json"
 EVENT_REGISTRY_FILE = DATA_DIR / "news_momentum_event_registry.json"
+ALERT_MEMORY_FILE = DATA_DIR / "news_momentum_alert_memory.json"
 
 
 def _aware_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -236,6 +238,7 @@ class NewsMomentumOrchestrator:
         # Persistent cooldown by (ticker, headline_hash) to prevent re-alerting
         # on the same news event even if event_registry expires. Lives 4 hours.
         self._headline_alert_cooldown: Dict[str, datetime] = {}
+        self._alert_memory: Dict[str, dict] = {}
         self._telegram_learning = AdaptiveTelegramLearning()
         from src.core.agentic.news_momentum_shadow_logger import ShadowAlertLogger
         self._shadow_logger = ShadowAlertLogger()
@@ -246,6 +249,8 @@ class NewsMomentumOrchestrator:
         self._load_candidates()
         self._load_cooldowns()
         self._load_headline_cooldowns()
+        self._load_alert_memory()
+        self._hydrate_cooldowns_from_alert_history()
         # Track events for cross-source velocity and duplicate detection
         self._event_registry: Dict[str, NewsEvent] = {}
         self._load_event_registry()
@@ -545,6 +550,118 @@ class NewsMomentumOrchestrator:
             k: ts.isoformat() for k, ts in self._headline_alert_cooldown.items()
         }
         save_json_file(HEADLINE_COOLDOWN_FILE, data)
+
+    def _alert_memory_key(self, ticker: str, headline: str) -> str:
+        return f"{ticker.upper()}:{self._headline_hash(headline)}"
+
+    def _stable_alert_id(self, c: NewsMomentumCandidate) -> str:
+        published = (_aware_utc(c.published_at) or datetime.min.replace(tzinfo=timezone.utc)).isoformat()
+        raw = f"news_momentum|{c.ticker.upper()}|{self._headline_hash(c.headline)}|{published}"
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        return f"news_momentum_{c.ticker.upper()}_{digest}"
+
+    def _load_alert_memory(self) -> None:
+        raw = load_json_file(ALERT_MEMORY_FILE, default=None)
+        if isinstance(raw, dict):
+            self._alert_memory = raw
+            logger.debug("NewsMomentum: loaded %d alert memory entries", len(self._alert_memory))
+
+    def _save_alert_memory(self) -> None:
+        save_json_file(ALERT_MEMORY_FILE, self._alert_memory)
+
+    def _hydrate_cooldowns_from_alert_history(self) -> None:
+        """Rebuild suppression state from durable alert records on restart.
+
+        This is a second line of defence for Railway redeploys/crashes where the
+        explicit cooldown files are missing, empty, or stale but the alert
+        history still exists.
+        """
+        now = datetime.now(timezone.utc)
+        ticker_window = timedelta(minutes=self.config.telegram_cooldown_minutes)
+        headline_window = timedelta(hours=max(24.0, float(self.config.news_max_age_hours or 0)))
+        hydrated = 0
+
+        for key, item in list(self._alert_memory.items()):
+            try:
+                sent_at = _aware_utc(datetime.fromisoformat(str(item.get("sent_at"))))
+                ticker = str(item.get("ticker") or key.split(":", 1)[0]).upper()
+            except Exception:
+                continue
+            if sent_at is None:
+                continue
+            if now - sent_at <= ticker_window:
+                current = _aware_utc(self._alert_cooldown.get(ticker))
+                if current is None or sent_at > current:
+                    self._alert_cooldown[ticker] = sent_at
+                    hydrated += 1
+            if now - sent_at <= headline_window:
+                current = _aware_utc(self._headline_alert_cooldown.get(key))
+                if current is None or sent_at > current:
+                    self._headline_alert_cooldown[key] = sent_at
+
+        for alert in getattr(self._telegram_learning, "_alerts", []):
+            try:
+                sent_at = _aware_utc(alert.sent_at)
+                ticker = alert.ticker.upper()
+            except Exception:
+                continue
+            if sent_at and now - sent_at <= ticker_window:
+                current = _aware_utc(self._alert_cooldown.get(ticker))
+                if current is None or sent_at > current:
+                    self._alert_cooldown[ticker] = sent_at
+                    hydrated += 1
+            headline = getattr(alert, "headline", None)
+            if sent_at and headline and now - sent_at <= headline_window:
+                key = self._alert_memory_key(ticker, headline)
+                current = _aware_utc(self._headline_alert_cooldown.get(key))
+                if current is None or sent_at > current:
+                    self._headline_alert_cooldown[key] = sent_at
+
+        if hydrated:
+            self._save_cooldowns()
+            self._save_headline_cooldowns()
+            logger.info("NewsMomentum: hydrated %d cooldown entries from alert history", hydrated)
+
+    def _remember_sent_alert(self, c: NewsMomentumCandidate, sent_at: datetime) -> None:
+        key = self._alert_memory_key(c.ticker, c.headline)
+        if not hasattr(self, "_alert_memory"):
+            self._alert_memory = {}
+        self._alert_memory[key] = {
+            "ticker": c.ticker.upper(),
+            "headline_hash": self._headline_hash(c.headline),
+            "headline": c.headline,
+            "source": c.source.value if hasattr(c.source, "value") else str(c.source),
+            "published_at": (_aware_utc(c.published_at) or sent_at).isoformat(),
+            "sent_at": sent_at.isoformat(),
+            "alert_id": c.telegram_alert_id or self._stable_alert_id(c),
+        }
+        config = getattr(self, "config", None)
+        news_max_age_hours = getattr(config, "news_max_age_hours", 24.0)
+        cutoff = sent_at - timedelta(hours=max(24.0, float(news_max_age_hours or 0)))
+        kept: Dict[str, dict] = {}
+        for k, v in self._alert_memory.items():
+            try:
+                item_sent_at = _aware_utc(datetime.fromisoformat(str(v.get("sent_at"))))
+            except Exception:
+                continue
+            if item_sent_at and item_sent_at >= cutoff:
+                kept[k] = v
+        self._alert_memory = kept
+        self._save_alert_memory()
+
+    def _sent_alerts_today_for_ticker(self, ticker: str, now: datetime) -> int:
+        today = now.astimezone(timezone.utc).date()
+        count = 0
+        for item in getattr(self, "_alert_memory", {}).values():
+            if str(item.get("ticker", "")).upper() != ticker.upper():
+                continue
+            try:
+                sent_at = _aware_utc(datetime.fromisoformat(str(item.get("sent_at"))))
+            except Exception:
+                continue
+            if sent_at and sent_at.astimezone(timezone.utc).date() == today:
+                count += 1
+        return count
 
     def _load_event_registry(self) -> None:
         raw = load_json_file(EVENT_REGISTRY_FILE, default=None)
@@ -1547,6 +1664,22 @@ class NewsMomentumOrchestrator:
             c._block_reason = "headline_cooldown"  # type: ignore[attr-defined]
             return False
 
+        memory_key = self._alert_memory_key(c.ticker, c.headline)
+        memory = getattr(self, "_alert_memory", {}).get(memory_key)
+        if memory:
+            try:
+                last_seen = _aware_utc(datetime.fromisoformat(str(memory.get("sent_at"))))
+            except Exception:
+                last_seen = None
+            memory_window = max(
+                self.config.telegram_cooldown_minutes * 60,
+                int(max(24.0, float(self.config.news_max_age_hours or 0)) * 3600),
+            )
+            if last_seen and (now - last_seen).total_seconds() < memory_window:
+                logger.debug("Telegram gate: %s suppressed by alert memory", c.ticker)
+                c._block_reason = "alert_memory"  # type: ignore[attr-defined]
+                return False
+
         # Stale candidate guard: don't alert on candidates > 24 hours old.
         # News momentum can play out over a full session — premarket news at 5am
         # often runs at 9:30am open, and overnight news from prior session can
@@ -1850,20 +1983,31 @@ class NewsMomentumOrchestrator:
         # ── Chase-the-spike guard (V23.4) ─────────────────────────────────
         # If the stock has ALREADY moved past the chase cap, the alert is
         # arriving after the bulk of the move and entries are usually traps.
-        # Breakout/first-mover candidates carry their own price-action
-        # confirmation, so they bypass this check.
-        is_confirmed_rocket_for_chase = bool(breakout_tier) or first_mover
+        # Only fresh/strong catalyst paths bypass this. A breakout by itself can
+        # still be too late to chase after the move is already extended.
+        is_confirmed_rocket_for_chase = first_mover or bullish_flash or high_conviction
         if (
             not is_confirmed_rocket_for_chase
             and c.move_pct is not None
-            and c.move_pct > self.config.chase_spike_max_move_pct
+            and c.move_pct > min(self.config.chase_spike_max_move_pct, self.config.late_chase_block_move_pct)
         ):
             logger.info(
-                "Telegram gate: %s chase-spike (move=%.1f%% > cap=%.1f%%)",
-                c.ticker, c.move_pct, self.config.chase_spike_max_move_pct,
+                "Telegram gate: %s late-chase suppressed (move=%.1f%% > cap=%.1f%%)",
+                c.ticker, c.move_pct, min(self.config.chase_spike_max_move_pct, self.config.late_chase_block_move_pct),
             )
-            c._block_reason = f"chase_spike({c.move_pct:.1f}%)"  # type: ignore[attr-defined]
+            c._block_reason = f"late_chase({c.move_pct:.1f}%)"  # type: ignore[attr-defined]
             return False
+
+        daily_cap = int(getattr(self.config, "daily_standard_alert_cap_per_ticker", 1) or 0)
+        if daily_cap > 0 and not (first_mover or bullish_flash or high_conviction):
+            sent_today = self._sent_alerts_today_for_ticker(c.ticker, now)
+            if sent_today >= daily_cap:
+                logger.info(
+                    "Telegram gate: %s daily standard alert cap reached (%d/%d)",
+                    c.ticker, sent_today, daily_cap,
+                )
+                c._block_reason = f"daily_ticker_cap({sent_today}/{daily_cap})"  # type: ignore[attr-defined]
+                return False
 
         # Price filter — explicit rejection for out-of-range prices.
         # BUT: breakout and first-mover candidates bypass the MAX price check
@@ -2193,22 +2337,23 @@ class NewsMomentumOrchestrator:
         """Send a formatted Telegram alert."""
         text = self._format_telegram_message(c)
         try:
+            c.telegram_alert_id = c.telegram_alert_id or self._stable_alert_id(c)
             sent = await send_telegram_alert(
                 text,
                 parse_mode="HTML",
-                alert_id=c.telegram_alert_id or c.id,
+                alert_id=c.telegram_alert_id,
                 ticker=c.ticker,
                 alert_type="news_momentum",
                 priority=2 if getattr(c, "_first_mover", False) else 5,
             )
             if sent:
                 c.telegram_sent = True
-                c.telegram_alert_id = f"{c.ticker}_{int(datetime.now(timezone.utc).timestamp())}"
                 now_ts = datetime.now(timezone.utc)
                 self._alert_cooldown[c.ticker] = now_ts
                 # Record headline cooldown so the same news can't re-alert
                 headline_key = f"{c.ticker}:{self._headline_hash(c.headline)}"
                 self._headline_alert_cooldown[headline_key] = now_ts
+                self._remember_sent_alert(c, now_ts)
                 # Prune old headline cooldowns (keep 24h — must exceed the
                 # news-freshness window so the same headline can't re-alert
                 # within its own fresh lifetime).
@@ -2220,6 +2365,10 @@ class NewsMomentumOrchestrator:
                 # Persist cooldowns immediately so a crash/restart doesn't lose them
                 self._save_cooldowns()
                 self._save_headline_cooldowns()
+                try:
+                    self._save_candidates()
+                except Exception as persist_exc:
+                    logger.debug("NewsMomentum: candidate persistence after alert failed: %s", persist_exc)
 
                 try:
                     # Record for learning — capture ALL features for future ML training
@@ -2228,6 +2377,9 @@ class NewsMomentumOrchestrator:
                         alert_id=c.telegram_alert_id,
                         ticker=c.ticker,
                         sent_at=datetime.now(timezone.utc),
+                        headline=c.headline,
+                        source=c.source.value if hasattr(c.source, "value") else str(c.source),
+                        published_at=c.published_at,
                         catalyst_type=c.catalyst_sub_type,
                         session_type=c.session,
                         price_at_alert=c.current_price or 0.0,

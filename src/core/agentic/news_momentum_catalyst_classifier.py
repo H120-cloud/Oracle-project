@@ -303,7 +303,7 @@ CORPORATE_KEYWORDS = {
         r"partnership with (walmart|target|costco|home depot|lowe.s|kroger|amazon|cvs|walgreens)",
         r"partnership with (boeing|lockheed|raytheon|northrop|general dynamics|spacex)",
         r"partnership with (jpmorgan|goldman sachs|morgan stanley|bank of america|wells fargo|citigroup)",
-        r"partnership with (pfizer|merck|johnson & johnson|j&j|astrazeneca|novartis|roche|sanofi|gilead|moderna)",
+        r"partnership with (pfizer|merck|johnson & johnson|j&j|astrazeneca|novartis|roche|sanofi|gilead|moderna|novo nordisk)",
         r"partnership with (toyota|ford|gm|general motors|stellantis|volkswagen|bmw|mercedes|honda|hyundai)",
         r"strategic partnership with major",
         # Extended distribution agreements — add tech megacaps + pharma majors
@@ -315,7 +315,8 @@ CORPORATE_KEYWORDS = {
         r"co[- ]marketing agreement with",
         # Strategic alliance with named majors
         r"strategic alliance with (apple|microsoft|google|amazon|meta|nvidia|tesla|samsung)",
-        r"strategic alliance with (pfizer|merck|johnson & johnson|j&j|astrazeneca|novartis|roche|sanofi|gilead|moderna)",
+        r"strategic alliance with (pfizer|merck|johnson & johnson|j&j|astrazeneca|novartis|roche|sanofi|gilead|moderna|novo nordisk)",
+        r"(clinical supply|clinical trial collaboration and supply) agreement with (novo nordisk|pfizer|merck|johnson & johnson|j&j|astrazeneca|novartis|roche|sanofi|gilead|moderna)",
         # Direct-to-cell, In-vehicle, etc — flagship deals
         r"direct[- ]to[- ]cell", r"in[- ]vehicle (voice|ai|partnership|integration)",
         # Auto/tech major partnership
@@ -327,6 +328,10 @@ CORPORATE_KEYWORDS = {
         # Energy / utility / industrial supply deals
         r"\d+\s*(gw|mw|kwh|mwh) (supply|module|contract|agreement)",
         r"supply agreement (with|for)",
+        r"clinical supply agreement",
+        r"clinical trial collaboration and supply agreement",
+        r"supply agreement with (novo nordisk|pfizer|merck|johnson & johnson|j&j|astrazeneca|novartis|roche|sanofi|gilead|moderna)",
+        r"(wegovy|semaglutide).*(supply|clinical trial|phase 2b|phase ii)",
         r"solar module supply", r"battery supply", r"chip supply",
         r"long[- ]term supply", r"multi[- ]year supply",
         r"offtake agreement", r"power purchase agreement", r"\bppa\b.*(signed|executed|announced)",
@@ -768,7 +773,7 @@ def classify_headline(headline: str) -> tuple[CatalystCategory, CatalystSubType,
                 tier1 = (
                     r"apple|microsoft|google|amazon|meta|nvidia|tesla|samsung|sony|oracle|"
                     r"salesforce|ibm|walmart|target|costco|home depot|kroger|cvs|walgreens|"
-                    r"pfizer|merck|johnson & johnson|j&j|astrazeneca|novartis|roche|sanofi|gilead|moderna|"
+                    r"pfizer|merck|johnson & johnson|j&j|astrazeneca|novartis|roche|sanofi|gilead|moderna|novo nordisk|"
                     r"toyota|ford|gm|general motors|stellantis|volkswagen|bmw|mercedes|honda|hyundai|"
                     r"boeing|lockheed|raytheon|northrop|general dynamics|spacex"
                 )

@@ -36,6 +36,50 @@ New behavior:
 
 Ticker enrichment is still used, but it has `FINVIZ_TICKER_ENRICHMENT_BUDGET_SECONDS` and per-ticker `asyncio.wait_for` timeouts, so global alerts do not wait behind slow quote pages.
 
+## Supplemental Press-Wire Coverage
+
+The live news/pre-news pipeline now includes conservative supplemental source scrapers:
+
+- PRNewswire public-company releases
+- Sharecast press notes
+- GlobeNewswire
+- BusinessWire
+- Accesswire
+- Newsfile
+
+These sources only emit items where the ticker is explicitly present in the release text. They are used by both News Momentum and the Pre-News universe/batch-news matcher so fresh tickered catalysts can enter the system before Finviz catches up.
+
+## Late-Chase And Repeat Alert Controls
+
+To reduce repeated alerts after a stock has already made the move:
+
+- late non-high-conviction candidates above `late_chase_block_move_pct` are suppressed
+- ordinary same-ticker alerts are capped by `daily_standard_alert_cap_per_ticker`
+- fresh first-mover, bullish flash, and high-conviction catalyst paths still bypass these controls
+- alert memory is persisted in `news_momentum_alert_memory.json` so Railway restarts do not forget what was already sent
+
+The goal is to keep early rocket alerts while reducing redeploy/restart repeats and late chase noise.
+
+## Telegram Status Diagnostics
+
+The bot now supports:
+
+`/status TICKER`
+
+It reads the persisted News Momentum candidate, cooldown, alert-memory, and shadow-block files and reports the latest headline, source, publish/detect age, score snapshot, cooldown state, last alert memory, and most recent block reason.
+
+This gives a fast way to answer: "Did Oracle see this ticker, and if yes, why did/didn't it alert?"
+
+## Source Latency Metrics
+
+Source health now records headline latency samples:
+
+- average source latency
+- maximum source latency
+- latency sample count
+
+This helps identify whether a source is delivering stale headlines even when parsing itself is healthy.
+
 ## First-Mover Freshness Logic
 
 First-mover rescue now requires both:

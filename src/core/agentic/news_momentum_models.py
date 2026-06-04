@@ -218,6 +218,9 @@ class NewsSource(str, Enum):
     GLOBE_NEWSWIRE = "globenewswire"
     BUSINESS_WIRE = "businesswire"
     PR_NEWSWIRE = "prnewswire"
+    SHARECAST = "sharecast"
+    ACCESSWIRE = "accesswire"
+    NEWSFILE = "newsfile"
     COMPANY_PRESS = "company_press"
     ORACLE_SCANNER = "oracle_scanner"
 
@@ -407,6 +410,9 @@ class TelegramAlertRecord(BaseModel):
     alert_id: str
     ticker: str
     sent_at: datetime
+    headline: Optional[str] = None
+    source: Optional[str] = None
+    published_at: Optional[datetime] = None
     catalyst_type: CatalystSubType
     session_type: SessionType
     price_at_alert: float
@@ -482,7 +488,7 @@ class TelegramAlertRecord(BaseModel):
     user_marked_poor: bool = False
     resolved_at: Optional[datetime] = None
 
-    @field_validator("sent_at", "resolved_at")
+    @field_validator("sent_at", "published_at", "resolved_at")
     @classmethod
     def _normalize_datetimes(cls, value):
         return _aware_utc_datetime(value)
@@ -934,6 +940,8 @@ class NewsMomentumConfig(BaseModel):
     # are unlikely to give a clean entry. Confirmed rockets (breakout /
     # first-mover) bypass — those signals carry their own confirmation.
     chase_spike_max_move_pct: float = 75.0
+    late_chase_block_move_pct: float = 75.0
+    daily_standard_alert_cap_per_ticker: int = 1
 
     # Multi-source confirmation for cheap stocks: sub-$2 names are heavily
     # manipulation-prone. Require corroboration unless the catalyst type

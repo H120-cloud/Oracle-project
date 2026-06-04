@@ -18,7 +18,7 @@ import math
 import os
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yfinance as yf
 
@@ -68,6 +68,9 @@ from src.core.agentic.pre_news_scoring import (
 from src.core.agentic.pre_news_evaluator import PreNewsEvaluator
 from src.core.agentic.pre_news_pattern_memory import PreNewsPatternMemory
 from src.core.finviz_news import FinvizNewsScraper
+from src.core.prnewswire_news import PRNewswireScraper
+from src.core.sharecast_news import SharecastScraper
+from src.core.wire_news import WireNewsScraper
 from src.core.agentic.finviz_universe import (
     fetch_finviz_top_gainer_tickers,
     fetch_finviz_under2_high_volume_tickers,
@@ -336,6 +339,24 @@ def _check_news_status(
             all_items.extend(titan_summary.news_items)
         except Exception as e:
             logger.debug("News check StockTitan fetch failed: %s", e)
+        try:
+            prn = PRNewswireScraper()
+            prn_summary = prn.fetch_all_sync()
+            all_items.extend(prn_summary.news_items)
+        except Exception as e:
+            logger.debug("News check PRNewswire fetch failed: %s", e)
+        try:
+            sharecast = SharecastScraper()
+            sharecast_summary = sharecast.fetch_all_sync()
+            all_items.extend(sharecast_summary.news_items)
+        except Exception as e:
+            logger.debug("News check Sharecast fetch failed: %s", e)
+        try:
+            wire = WireNewsScraper()
+            wire_summary = wire.fetch_all_sync()
+            all_items.extend(wire_summary.news_items)
+        except Exception as e:
+            logger.debug("News check WireNews fetch failed: %s", e)
 
     best_headline: Optional[str] = None
     best_ts: Optional[datetime] = None
@@ -730,6 +751,9 @@ class PreNewsDetector:
         # Reuse news scrapers across scans so the 5-minute cache works
         self._finviz_scraper: Optional[Any] = None
         self._stocktitan_scraper: Optional[Any] = None
+        self._prnewswire_scraper: Optional[Any] = None
+        self._sharecast_scraper: Optional[Any] = None
+        self._wire_scraper: Optional[Any] = None
         # Offline Rocket CatBoost shadow scorer. It logs predictions only and
         # never changes pre-news alert eligibility or Telegram content.
         try:
@@ -1547,7 +1571,68 @@ class PreNewsDetector:
         except Exception as e:
             logger.debug("PreNewsDetector: StockTwits trending failed: %s", e)
 
-        # 4. Manual universe integration (tickers the user is already tracking)
+        # 4. PRNewswire public-company releases (fresh catalysts even when Finviz is blocked)
+        try:
+            if self._prnewswire_scraper is None:
+                self._prnewswire_scraper = PRNewswireScraper()
+            summary = self._prnewswire_scraper.fetch_all_sync()
+            max_age_hours = float(os.environ.get("PRNEWSWIRE_UNIVERSE_MAX_AGE_HOURS", "6") or 6)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+            for item in summary.news_items:
+                if getattr(item, "sentiment", "") == "bearish":
+                    continue
+                ts = getattr(item, "timestamp", None)
+                if ts is not None:
+                    ts_utc = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+                    if ts_utc < cutoff:
+                        continue
+                for ticker in getattr(item, "tickers", []) or []:
+                    _tag(ticker, "prnewswire_public_company")
+        except Exception as e:
+            logger.debug("PreNewsDetector: PRNewswire universe fetch failed: %s", e)
+
+        # 5. Sharecast press notes (supplemental; only high-confidence tickered items)
+        try:
+            if self._sharecast_scraper is None:
+                self._sharecast_scraper = SharecastScraper()
+            summary = self._sharecast_scraper.fetch_all_sync()
+            max_age_hours = float(os.environ.get("SHARECAST_UNIVERSE_MAX_AGE_HOURS", "24") or 24)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+            for item in summary.news_items:
+                if getattr(item, "sentiment", "") == "bearish":
+                    continue
+                ts = getattr(item, "timestamp", None)
+                if ts is not None:
+                    ts_utc = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+                    if ts_utc < cutoff:
+                        continue
+                for ticker in getattr(item, "tickers", []) or []:
+                    _tag(ticker, "sharecast_press_note")
+        except Exception as e:
+            logger.debug("PreNewsDetector: Sharecast universe fetch failed: %s", e)
+
+        # 6. Supplemental wires (GlobeNewswire, BusinessWire, Accesswire, Newsfile)
+        try:
+            if self._wire_scraper is None:
+                self._wire_scraper = WireNewsScraper()
+            summary = self._wire_scraper.fetch_all_sync()
+            max_age_hours = float(os.environ.get("WIRE_UNIVERSE_MAX_AGE_HOURS", "6") or 6)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+            for item in summary.news_items:
+                if getattr(item, "sentiment", "") == "bearish":
+                    continue
+                ts = getattr(item, "timestamp", None)
+                if ts is not None:
+                    ts_utc = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+                    if ts_utc < cutoff:
+                        continue
+                source = getattr(item, "source", "wire") or "wire"
+                for ticker in getattr(item, "tickers", []) or []:
+                    _tag(ticker, f"{source.lower()}_wire")
+        except Exception as e:
+            logger.debug("PreNewsDetector: WireNews universe fetch failed: %s", e)
+
+        # 7. Manual universe integration (tickers the user is already tracking)
         try:
             from src.core.agentic.manual_universe import get_manual_universe_tickers
             for ticker in get_manual_universe_tickers():
@@ -1568,6 +1653,12 @@ class PreNewsDetector:
         if self._stocktitan_scraper is None:
             from src.core.stocktitan_news import StockTitanScraper
             self._stocktitan_scraper = StockTitanScraper()
+        if self._prnewswire_scraper is None:
+            self._prnewswire_scraper = PRNewswireScraper()
+        if self._sharecast_scraper is None:
+            self._sharecast_scraper = SharecastScraper()
+        if self._wire_scraper is None:
+            self._wire_scraper = WireNewsScraper()
 
         items: list = []
         try:
@@ -1580,6 +1671,21 @@ class PreNewsDetector:
             items.extend(titan_summary.news_items)
         except Exception as e:
             logger.debug("News batch fetch StockTitan failed: %s", e)
+        try:
+            prn_summary = await self._prnewswire_scraper.fetch_all()
+            items.extend(prn_summary.news_items)
+        except Exception as e:
+            logger.debug("News batch fetch PRNewswire failed: %s", e)
+        try:
+            sharecast_summary = await self._sharecast_scraper.fetch_all()
+            items.extend(sharecast_summary.news_items)
+        except Exception as e:
+            logger.debug("News batch fetch Sharecast failed: %s", e)
+        try:
+            wire_summary = await self._wire_scraper.fetch_all()
+            items.extend(wire_summary.news_items)
+        except Exception as e:
+            logger.debug("News batch fetch WireNews failed: %s", e)
 
         # Deduplicate across sources
         try:

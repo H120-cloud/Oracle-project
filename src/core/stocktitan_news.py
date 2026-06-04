@@ -18,6 +18,7 @@ from src.core.finviz_news import (
     _run_coro_blocking,
     _sort_by_ts_desc,
 )
+from src.core.news_ticker_extractor import extract_tickers
 
 # StockTitan is a primary real-time catalyst source consumed by the ~20s news
 # momentum scan loop. Its own cache TTL (default 20s) is decoupled from Finviz's
@@ -32,11 +33,6 @@ HEADERS = {**_BASE_HEADERS, "Accept": "application/rss+xml, application/xml, tex
 
 # RSS feed — latest 100 news items with tickers embedded in title & URL
 STOCKTITAN_RSS_URL = "https://www.stocktitan.net/rss"
-
-# Extract ticker from URL: /news/TICKER/slug.html
-_URL_TICKER_RE = re.compile(r"stocktitan\.net/news/([A-Z]{1,6})/", re.IGNORECASE)
-# Extract ticker from title suffix: "| TICKER Stock News"
-_TITLE_TICKER_RE = re.compile(r"\|\s*([A-Z]{1,5})\s+Stock\s+News", re.IGNORECASE)
 
 # Simple sentiment keywords
 _BULLISH = [
@@ -133,28 +129,19 @@ class StockTitanScraper:
         if channel is None:
             return []
 
-        skip_tickers = {"TODAY", "EARNINGS", "AI", "RSS", "LIVE", "NEWS"}
         items: List[FinvizNewsItem] = []
 
         for item_el in channel.findall("item"):
             title = (item_el.findtext("title") or "").strip()
             link = (item_el.findtext("link") or "").strip()
+            description = (item_el.findtext("description") or "").strip()
             pub_date_str = item_el.findtext("pubDate")
 
             if not title or not link:
                 continue
 
-            # Extract ticker from URL first, then title
-            ticker = None
-            url_match = _URL_TICKER_RE.search(link)
-            if url_match:
-                ticker = url_match.group(1).upper()
-            else:
-                title_match = _TITLE_TICKER_RE.search(title)
-                if title_match:
-                    ticker = title_match.group(1).upper()
-
-            if not ticker or len(ticker) > 5 or ticker in skip_tickers:
+            tickers = extract_tickers(title, description, url=link)
+            if not tickers:
                 continue
 
             # Clean headline: remove " | TICKER Stock News" suffix
@@ -181,7 +168,7 @@ class StockTitanScraper:
                 source="StockTitan",
                 url=link,
                 timestamp=ts,
-                tickers=[ticker],
+                tickers=tickers,
                 category="news",
                 sentiment=sentiment,
             ))

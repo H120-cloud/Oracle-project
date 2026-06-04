@@ -8,6 +8,7 @@ based on historical performance.
 from __future__ import annotations
 
 import logging
+import os
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -24,7 +25,7 @@ from src.utils.atomic_json import save_json_file, load_json_file
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+DATA_DIR = Path(os.environ.get("AGENTIC_DATA_DIR", "data/agentic"))
 ALERTS_FILE = DATA_DIR / "news_momentum_telegram_alerts.json"
 
 MIN_ALERTS_FOR_ADAPTATION = 100

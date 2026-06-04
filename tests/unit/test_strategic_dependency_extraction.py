@@ -55,7 +55,7 @@ def test_frontend_api_split_has_strategic_legacy_boundaries():
 
     compat_text = compat.read_text(encoding="utf-8")
     assert "api_strategic" in compat_text
-    assert "api_legacy" in compat_text
+    assert "api_legacy" not in compat_text
 
 
 def test_ohlcvbar_is_reexported_from_strategic_market_data_model():

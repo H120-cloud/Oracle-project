@@ -23,7 +23,7 @@ import json
 import logging
 import re
 from html import unescape
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -36,12 +36,36 @@ from src.core.agentic.sec_filing_models import FilingType, SECFiling
 logger = logging.getLogger(__name__)
 
 CIK_TICKER_CACHE_FILE = DATA_DIR / "cik_ticker_map.json"
+SEC_FIREHOSE_SEEN_FILE = DATA_DIR / "sec_firehose_seen_8k.json"
 GETCURRENT_URL = (
     "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent"
     "&type={form}&company=&dateb=&owner=include&count={count}&output=atom"
 )
 
 _CIK_TICKER_MAP: Dict[str, str] = {}
+
+
+def load_seen_accessions(limit: int = 5000) -> Set[str]:
+    """Load durable SEC firehose dedupe state across Railway restarts."""
+    try:
+        raw = json.loads(SEC_FIREHOSE_SEEN_FILE.read_text(encoding="utf-8"))
+        if isinstance(raw, list):
+            return set(str(x) for x in raw[-limit:] if x)
+    except Exception:
+        pass
+    return set()
+
+
+def save_seen_accessions(seen_accessions: Set[str], limit: int = 5000) -> None:
+    """Persist recent SEC accession numbers atomically."""
+    try:
+        SEC_FIREHOSE_SEEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        items = sorted(str(x) for x in seen_accessions if x)[-limit:]
+        tmp = SEC_FIREHOSE_SEEN_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(items), encoding="utf-8")
+        tmp.replace(SEC_FIREHOSE_SEEN_FILE)
+    except Exception as exc:
+        logger.debug("SEC firehose seen-accession save failed: %s", exc)
 
 
 def _strip_tags(text: str) -> str:
@@ -73,6 +97,11 @@ def build_sec_event_headline(filing: Dict[str, Any], content_text: str = "") -> 
 
     if re.search(r"\b(merger|merge|acquisition|acquire[sd]?|definitive agreement|all-cash transaction|business combination)\b", lower):
         return f"{company} filed SEC Form {form}: M&A / acquisition update"
+    if re.search(
+        r"\b(clinical supply agreement|clinical trial collaboration and supply|supply agreement)\b",
+        lower,
+    ) and re.search(r"\b(novo nordisk|wegovy|semaglutide|phase 2b|phase ii)\b", lower):
+        return f"{company} filed SEC Form {form}: clinical supply agreement with major pharma partner"
     if analyzed.dilution_events or re.search(r"\b(registered direct|public offering|pipe financing|convertible note|warrant|atm offering)\b", lower):
         return f"{company} filed SEC Form {form}: financing / dilution update"
     if re.search(r"\b(delisting|nasdaq deficiency|minimum bid|compliance notice|listing rule)\b", lower):
@@ -150,6 +179,7 @@ async def fetch_current_filings(
     form: str = "8-K",
     count: int = 100,
     client: Optional[httpx.AsyncClient] = None,
+    initial_emit_lookback_minutes: int = 30,
 ) -> List[Dict[str, Any]]:
     """Poll EDGAR getcurrent for `form`, return NEW filings resolved to tickers.
 
@@ -176,17 +206,21 @@ async def fetch_current_filings(
             title_m = re.search(r"<title>(.+?)</title>", e, flags=re.DOTALL)
             summary_m = re.search(r"<summary>(.+?)</summary>", e, flags=re.DOTALL)
             updated_m = re.search(r"<updated>(.+?)</updated>", e, flags=re.DOTALL)
-            id_m = re.search(r"accession-number=(\S+?)<", e)
+            id_m = re.search(r"accession-number=([A-Za-z0-9-]+)", e)
             link_m = re.search(r'<link[^>]+href="([^"]+)"', e)
             title = (title_m.group(1) if title_m else "").strip()
             accession = (id_m.group(1) if id_m else "").strip()
             if not accession or accession in seen_accessions:
                 continue
-            seen_accessions.add(accession)
+            published_at = _parse_updated(updated_m.group(1) if updated_m else "")
             # On the very first poll we only seed the dedup set — we don't want
             # to fire a burst of alerts for filings that are already old.
             if first_run:
-                continue
+                cutoff = datetime.now(timezone.utc) - timedelta(minutes=initial_emit_lookback_minutes)
+                if initial_emit_lookback_minutes <= 0 or published_at < cutoff:
+                    seen_accessions.add(accession)
+                    continue
+            seen_accessions.add(accession)
 
             cik_m = re.search(r"\((\d{10})\)", title)
             cik = cik_m.group(1) if cik_m else None
@@ -203,7 +237,7 @@ async def fetch_current_filings(
                 "company": company or ticker,
                 "form": form,
                 "accession": accession,
-                "published_at": _parse_updated(updated_m.group(1) if updated_m else ""),
+                "published_at": published_at,
                 "url": link_m.group(1) if link_m else "",
                 "summary": _strip_tags(summary_m.group(1) if summary_m else ""),
             })
@@ -215,4 +249,10 @@ async def fetch_current_filings(
     return out
 
 
-__all__ = ["build_sec_event_headline", "enrich_filing_content", "fetch_current_filings"]
+__all__ = [
+    "build_sec_event_headline",
+    "enrich_filing_content",
+    "fetch_current_filings",
+    "load_seen_accessions",
+    "save_seen_accessions",
+]

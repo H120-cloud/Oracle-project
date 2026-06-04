@@ -18,6 +18,9 @@ class SourceHealthSnapshot:
     missing_timestamp_count: int = 0
     parse_error_count: int = 0
     dropped_headline_count: int = 0
+    latency_sample_count: int = 0
+    latency_total_seconds: float = 0.0
+    latency_max_seconds: float = 0.0
     last_successful_parse_time: Optional[datetime] = None
     last_warning_at: Optional[datetime] = None
     warnings: List[str] = field(default_factory=list)
@@ -27,6 +30,12 @@ class SourceHealthSnapshot:
         if self.headlines_fetched <= 0:
             return 0.0
         return self.missing_timestamp_count / self.headlines_fetched
+
+    @property
+    def avg_latency_seconds(self) -> float:
+        if self.latency_sample_count <= 0:
+            return 0.0
+        return self.latency_total_seconds / self.latency_sample_count
 
 
 class SourceHealthTracker:
@@ -65,6 +74,30 @@ class SourceHealthTracker:
     def record_dropped_headline(self, source: str, count: int = 1) -> None:
         self.snapshot(source).dropped_headline_count += max(0, int(count or 0))
 
+    def record_latency(
+        self,
+        source: str,
+        published_at: Optional[datetime],
+        *,
+        detected_at: Optional[datetime] = None,
+    ) -> None:
+        if published_at is None:
+            return
+        detected_at = detected_at or _now()
+        if published_at.tzinfo is None:
+            published_at = published_at.replace(tzinfo=timezone.utc)
+        else:
+            published_at = published_at.astimezone(timezone.utc)
+        if detected_at.tzinfo is None:
+            detected_at = detected_at.replace(tzinfo=timezone.utc)
+        else:
+            detected_at = detected_at.astimezone(timezone.utc)
+        latency = max(0.0, (detected_at - published_at).total_seconds())
+        snap = self.snapshot(source)
+        snap.latency_sample_count += 1
+        snap.latency_total_seconds += latency
+        snap.latency_max_seconds = max(snap.latency_max_seconds, latency)
+
     def evaluate(self, *, now: Optional[datetime] = None) -> list[str]:
         now = now or _now()
         warnings: list[str] = []
@@ -100,6 +133,9 @@ class SourceHealthTracker:
                     else None
                 ),
                 "missing_timestamp_rate": snap.missing_timestamp_rate,
+                "avg_latency_seconds": round(snap.avg_latency_seconds, 2),
+                "max_latency_seconds": round(snap.latency_max_seconds, 2),
+                "latency_sample_count": snap.latency_sample_count,
             }
             for key, snap in self._snapshots.items()
         }

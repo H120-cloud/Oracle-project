@@ -4,13 +4,18 @@ Telegram Command Handler
 Polls the Telegram Bot API getUpdates endpoint and handles commands:
   /analysis TICKER  - Full stock analysis with price, volume, regime, stage, order flow
   /orderflow TICKER - Quick buy/sell order flow snapshot
+  /status TICKER    - Show latest alert/cooldown/block status for a ticker
   /help             - Show available commands
 
 Runs as a background task in the FastAPI lifespan.
 """
 
 import asyncio
+import json
 import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -22,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = 3.0  # seconds between polls
 ANALYSIS_TIMEOUT = 30.0  # seconds for analysis to complete
+AGENTIC_DATA_DIR = Path(os.environ.get("AGENTIC_DATA_DIR", "data/agentic"))
 
 _settings = get_settings()
 LEGACY_TELEGRAM_COMMANDS_ENABLED = not _settings.oracle_lean_mode
@@ -296,6 +302,133 @@ def _format_orderflow(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _parse_dt(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _age_text(dt: Optional[datetime]) -> str:
+    if dt is None:
+        return "unknown"
+    seconds = max(0, int((datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()))
+    if seconds < 90:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 90:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours}h"
+    return f"{hours // 24}d"
+
+
+def _fmt_float(value, default: str = "unknown") -> str:
+    try:
+        if value is None:
+            return default
+        return f"{float(value):.1f}"
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_json(path: Path, default):
+    try:
+        if not path.exists():
+            return default
+        with path.open("r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return default
+
+
+def _run_status(ticker: str) -> dict:
+    ticker = ticker.upper().strip()
+    candidates = _load_json(AGENTIC_DATA_DIR / "news_momentum_candidates.json", [])
+    cooldowns = _load_json(AGENTIC_DATA_DIR / "news_momentum_cooldowns.json", {})
+    alert_memory = _load_json(AGENTIC_DATA_DIR / "news_momentum_alert_memory.json", {})
+    shadow = _load_json(AGENTIC_DATA_DIR / "news_momentum_shadow_alerts.json", [])
+
+    ticker_candidates = [c for c in candidates if str(c.get("ticker", "")).upper() == ticker]
+    ticker_candidates.sort(key=lambda c: c.get("detected_at") or "", reverse=True)
+    latest = ticker_candidates[0] if ticker_candidates else None
+
+    ticker_memory = [
+        item for item in alert_memory.values()
+        if str(item.get("ticker", "")).upper() == ticker
+    ]
+    ticker_memory.sort(key=lambda item: item.get("sent_at") or "", reverse=True)
+    last_alert = ticker_memory[0] if ticker_memory else None
+
+    blocked = [
+        item for item in shadow
+        if str(item.get("ticker", "")).upper() == ticker
+    ]
+    blocked.sort(key=lambda item: item.get("logged_at") or item.get("detected_at") or "", reverse=True)
+    last_block = blocked[0] if blocked else None
+
+    cooldown_dt = _parse_dt(cooldowns.get(ticker))
+
+    return {
+        "ticker": ticker,
+        "latest": latest,
+        "last_alert": last_alert,
+        "last_block": last_block,
+        "cooldown_at": cooldown_dt,
+        "data_dir": str(AGENTIC_DATA_DIR),
+    }
+
+
+def _format_status(data: dict) -> str:
+    ticker = data["ticker"]
+    latest = data.get("latest")
+    last_alert = data.get("last_alert")
+    last_block = data.get("last_block")
+    cooldown_at = data.get("cooldown_at")
+
+    lines = [f"<b>{ticker} Oracle Status</b>", ""]
+    if latest:
+        published = _parse_dt(latest.get("published_at"))
+        detected = _parse_dt(latest.get("detected_at"))
+        lines.extend([
+            f"Last headline: {latest.get('headline', 'unknown')}",
+            f"Source: {latest.get('source', 'unknown')}",
+            f"Published age: {_age_text(published)}",
+            f"Detected age: {_age_text(detected)}",
+            f"Move: {latest.get('move_pct', 'unknown')}%",
+            f"Impact / Return: {_fmt_float(latest.get('news_impact_score'))} / {_fmt_float(latest.get('expected_return_score'))}",
+            f"Telegram sent: {latest.get('telegram_sent', False)}",
+        ])
+    else:
+        lines.append("No active News Momentum candidate found.")
+
+    lines.append("")
+    if cooldown_at:
+        lines.append(f"Ticker cooldown last set: {_age_text(cooldown_at)} ago")
+    else:
+        lines.append("Ticker cooldown: none found")
+
+    if last_alert:
+        sent_at = _parse_dt(last_alert.get("sent_at"))
+        lines.append(f"Last alert memory: {_age_text(sent_at)} ago")
+    else:
+        lines.append("Alert memory: none found")
+
+    if last_block:
+        reason = last_block.get("block_reason") or last_block.get("_block_reason") or "unknown"
+        lines.append(f"Last block reason: {reason}")
+    else:
+        lines.append("Last block reason: none found")
+
+    lines.append("")
+    lines.append(f"Data dir: {data.get('data_dir')}")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Command handlers
 # ---------------------------------------------------------------------------
@@ -368,6 +501,7 @@ async def _handle_help(chat_id: str):
                 "",
             ])
         lines.extend([
+            "/status TICKER - Show latest alert/cooldown/block status",
             "/help - Show this message",
             "",
             "<i>News Momentum and Pre-News alerts continue automatically.</i>",
@@ -382,6 +516,7 @@ async def _handle_help(chat_id: str):
         "/orderflow TICKER — Quick buy/sell snapshot\n\n"
         "/watch TICKER [bullish|bearish] — Add to watchlist, optional bias alert\n"
         "  Example: /watch AAPL bullish\n\n"
+        "/status TICKER - Show latest alert/cooldown/block status\n\n"
         "/help — Show this message\n\n"
         "<i>Example: /analysis AAPL</i>"
     )
@@ -424,6 +559,19 @@ async def _handle_watch_command(chat_id: str, ticker: str, preference: Optional[
         msg = f"Failed to add <b>{ticker}</b> to watchlist."
     finally:
         db.close()
+
+    await send_telegram_message(chat_id, msg)
+
+
+async def _handle_status_command(chat_id: str, ticker: str):
+    """Handle /status TICKER."""
+    ticker = ticker.upper().strip()
+    try:
+        data = await asyncio.to_thread(_run_status, ticker)
+        msg = _format_status(data)
+    except Exception as e:
+        logger.warning("Status command failed for %s: %s", ticker, e)
+        msg = f"<b>{ticker}</b>\n\nStatus lookup failed: {e}"
 
     await send_telegram_message(chat_id, msg)
 
@@ -524,6 +672,17 @@ async def telegram_command_polling_loop():
                                 send_telegram_message(
                                     msg_chat_id,
                                     "Usage: /watch TICKER [bullish|bearish]\nExample: /watch AAPL bullish",
+                                )
+                            )
+                    elif cmd == "/status":
+                        if len(parts) >= 2:
+                            ticker = parts[1]
+                            asyncio.create_task(_handle_status_command(msg_chat_id, ticker))
+                        else:
+                            asyncio.create_task(
+                                send_telegram_message(
+                                    msg_chat_id,
+                                    "Usage: /status TICKER\nExample: /status STI",
                                 )
                             )
                     elif cmd == "/help":

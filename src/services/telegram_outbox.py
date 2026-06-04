@@ -18,7 +18,7 @@ from typing import Any, Callable, Iterable, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+DATA_DIR = Path(os.environ.get("AGENTIC_DATA_DIR", "data/agentic"))
 OUTBOX_FILE = DATA_DIR / "telegram_outbox.jsonl"
 MAX_ATTEMPTS = int(os.environ.get("TELEGRAM_OUTBOX_MAX_ATTEMPTS", "6") or 6)
 

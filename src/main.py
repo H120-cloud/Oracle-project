@@ -848,19 +848,33 @@ async def _sec_edgar_firehose_loop():
 
     import httpx
     from src.core.agentic.sec_edgar_fetcher import SEC_USER_AGENT
-    from src.core.agentic.sec_edgar_firehose import enrich_filing_content, fetch_current_filings
+    from src.core.agentic.sec_edgar_firehose import (
+        enrich_filing_content,
+        fetch_current_filings,
+        load_seen_accessions,
+        save_seen_accessions,
+    )
     from src.core.agentic.news_momentum_catalyst_classifier import classify_headline
     from src.core.agentic.news_momentum_models import NewsEvent, NewsSource
 
-    seen: set[str] = set()
+    seen: set[str] = load_seen_accessions()
     poll_interval = int(os.getenv("SEC_FIREHOSE_INTERVAL_SECONDS", "15") or 15)
     max_per_poll = int(os.getenv("SEC_FIREHOSE_MAX_PER_POLL", "15") or 15)
+    feed_count = int(os.getenv("SEC_FIREHOSE_FEED_COUNT", "200") or 200)
+    initial_lookback = int(os.getenv("SEC_FIREHOSE_INITIAL_LOOKBACK_MINUTES", "30") or 30)
     client = httpx.AsyncClient(timeout=15.0, headers={"User-Agent": SEC_USER_AGENT})
     logger.info("SEC EDGAR 8-K firehose started (every %ds, cap %d/poll)", poll_interval, max_per_poll)
     try:
         while True:
             try:
-                filings = await fetch_current_filings(seen, form="8-K", client=client)
+                filings = await fetch_current_filings(
+                    seen,
+                    form="8-K",
+                    count=feed_count,
+                    client=client,
+                    initial_emit_lookback_minutes=initial_lookback,
+                )
+                save_seen_accessions(seen)
                 if filings:
                     events = []
                     for f in filings[:max_per_poll]:
@@ -901,6 +915,9 @@ async def _news_momentum_scan_loop():
     # Reuse scraper instances across iterations so the 5-minute cache is effective
     _finviz_scraper: Optional[Any] = None
     _stocktitan_scraper: Optional[Any] = None
+    _prnewswire_scraper: Optional[Any] = None
+    _sharecast_scraper: Optional[Any] = None
+    _wire_scraper: Optional[Any] = None
     _finviz_news_scraper: Optional[Any] = None
     # Heartbeat: log every N iterations so we can confirm the loop is alive
     # even when no new events are detected. Without this, an audit of the
@@ -929,6 +946,15 @@ async def _news_momentum_scan_loop():
                 if _stocktitan_scraper is None:
                     from src.core.stocktitan_news import StockTitanScraper
                     _stocktitan_scraper = StockTitanScraper()
+                if _prnewswire_scraper is None:
+                    from src.core.prnewswire_news import PRNewswireScraper
+                    _prnewswire_scraper = PRNewswireScraper()
+                if _sharecast_scraper is None:
+                    from src.core.sharecast_news import SharecastScraper
+                    _sharecast_scraper = SharecastScraper()
+                if _wire_scraper is None:
+                    from src.core.wire_news import WireNewsScraper
+                    _wire_scraper = WireNewsScraper()
 
                 all_items: List[Any] = []
                 try:
@@ -948,6 +974,37 @@ async def _news_momentum_scan_loop():
                 except Exception as exc:
                     _source_health.record_parse_error("StockTitan", now=datetime.now(timezone.utc))
                     logger.debug("NewsMomentum: StockTitan fetch error: %s", exc)
+
+                try:
+                    prn_summary = await _prnewswire_scraper.fetch_all()
+                    prn_items = (prn_summary.news_items or []) + (prn_summary.blog_items or [])
+                    _source_health.record_fetch("PRNewswire", len(prn_items), now=datetime.now(timezone.utc))
+                    all_items.extend(prn_items)
+                except Exception as exc:
+                    _source_health.record_parse_error("PRNewswire", now=datetime.now(timezone.utc))
+                    logger.debug("NewsMomentum: PRNewswire fetch error: %s", exc)
+
+                try:
+                    sharecast_summary = await _sharecast_scraper.fetch_all()
+                    sharecast_items = (sharecast_summary.news_items or []) + (sharecast_summary.blog_items or [])
+                    _source_health.record_fetch("Sharecast", len(sharecast_items), now=datetime.now(timezone.utc))
+                    all_items.extend(sharecast_items)
+                except Exception as exc:
+                    _source_health.record_parse_error("Sharecast", now=datetime.now(timezone.utc))
+                    logger.debug("NewsMomentum: Sharecast fetch error: %s", exc)
+
+                try:
+                    wire_summary = await _wire_scraper.fetch_all()
+                    wire_items = (wire_summary.news_items or []) + (wire_summary.blog_items or [])
+                    by_source: dict[str, int] = {}
+                    for item in wire_items:
+                        by_source[getattr(item, "source", "WireNews") or "WireNews"] = by_source.get(getattr(item, "source", "WireNews") or "WireNews", 0) + 1
+                    for source, count in by_source.items():
+                        _source_health.record_fetch(source, count, now=datetime.now(timezone.utc))
+                    all_items.extend(wire_items)
+                except Exception as exc:
+                    _source_health.record_parse_error("WireNews", now=datetime.now(timezone.utc))
+                    logger.debug("NewsMomentum: WireNews fetch error: %s", exc)
 
                 # Deduplicate across sources before emitting events
                 all_items = deduplicate_news_items(all_items)
@@ -986,8 +1043,29 @@ async def _news_momentum_scan_loop():
                         _stale_news_count += 1
                         _source_health.record_dropped_headline(getattr(item, "source", "unknown") or "unknown")
                         continue
+                    _source_health.record_latency(
+                        getattr(item, "source", "unknown") or "unknown",
+                        item.timestamp,
+                        detected_at=_now_utc,
+                    )
                     cat, sub, neg, vague = classify_headline(item.headline)
-                    source_enum = NewsSource.FINVIZ if getattr(item, "source", "") != "StockTitan" else NewsSource.STOCKTITAN
+                    source_name = getattr(item, "source", "")
+                    if source_name == "StockTitan":
+                        source_enum = NewsSource.STOCKTITAN
+                    elif source_name == "PRNewswire":
+                        source_enum = NewsSource.PR_NEWSWIRE
+                    elif source_name == "Sharecast":
+                        source_enum = NewsSource.SHARECAST
+                    elif source_name == "GlobeNewswire":
+                        source_enum = NewsSource.GLOBE_NEWSWIRE
+                    elif source_name == "BusinessWire":
+                        source_enum = NewsSource.BUSINESS_WIRE
+                    elif source_name == "Accesswire":
+                        source_enum = NewsSource.ACCESSWIRE
+                    elif source_name == "Newsfile":
+                        source_enum = NewsSource.NEWSFILE
+                    else:
+                        source_enum = NewsSource.FINVIZ
                     for ticker in item.tickers:
                         news_events.append(NewsEvent(
                             ticker=ticker,

@@ -41,3 +41,36 @@ def test_railway_startup_binds_to_port_without_code_volume_config():
     assert "ENV PORT=" not in dockerfile
     assert 'CMD sh -c "uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8000}"' in dockerfile
     assert "npm ci" in dockerfile
+
+
+def test_main_does_not_directly_import_archived_legacy_routes():
+    source = _read("src/main.py")
+
+    archived_routes = [
+        "scanner",
+        "signals",
+        "watchlist",
+        "models",
+        "analysis",
+        "backtest",
+        "intelligence",
+        "htf_scan",
+        "paper_trading",
+    ]
+    for route in archived_routes:
+        assert f"from src.api.routes import {route}" not in source
+
+    assert "_include_optional_legacy_router" in source
+
+
+def test_app_startup_survives_missing_legacy_modules_when_flags_enabled(monkeypatch):
+    monkeypatch.setenv("ORACLE_LEAN_MODE", "false")
+
+    from fastapi.testclient import TestClient
+    from src.main import app
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"

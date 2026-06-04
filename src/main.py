@@ -13,6 +13,7 @@ if os.path.isfile(_env_path):
     load_dotenv(_env_path)
 
 import asyncio
+import importlib
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -423,9 +424,18 @@ PAPER_TRADING_PRICE_INTERVAL = 30  # seconds between paper position price update
 async def _paper_trading_price_loop():
     """Background task: update paper trading positions with live prices for trailing stop management."""
     await asyncio.sleep(15)  # Wait 15s after startup
+    try:
+        paper_trading_module = importlib.import_module("src.api.routes.paper_trading")
+        _get_broker = getattr(paper_trading_module, "_get_broker")
+    except ImportError as exc:
+        logger.warning("Paper trading price loop disabled: %s", exc)
+        return
+    except AttributeError as exc:
+        logger.warning("Paper trading price loop disabled: %s", exc)
+        return
+
     while True:
         try:
-            from src.api.routes.paper_trading import _get_broker
             broker = _get_broker()
             if broker.positions:
                 import yfinance as yf
@@ -495,13 +505,24 @@ async def _watchlist_broadcast_loop():
     """Background task: push watchlist price updates every 1 second, alert checks every 60s."""
     global ALERT_CHECK_COUNTER
     await asyncio.sleep(10)  # Wait 10s after startup
+    try:
+        from src.db.repositories import WatchlistRepository
+    except ImportError as exc:
+        logger.warning("Watchlist broadcaster disabled: %s", exc)
+        return
+
+    try:
+        from src.services.watchlist_service import WatchlistService
+    except ImportError as exc:
+        WatchlistService = None  # type: ignore[assignment]
+        logger.warning("Watchlist alert checks disabled: %s", exc)
+
     while True:
         try:
             # Broadcast to watchlist WS clients (ConnectionManager handles empties)
             if _watchlist_mgr.has_clients:
                 db = SessionLocal()
                 try:
-                    from src.db.repositories import WatchlistRepository
                     import yfinance as yf
 
                     repo = WatchlistRepository(db)
@@ -550,8 +571,9 @@ async def _watchlist_broadcast_loop():
                     if ALERT_CHECK_COUNTER >= ALERT_CHECK_EVERY and items:
                         ALERT_CHECK_COUNTER = 0
                         _prune_cooldowns()
+                        if WatchlistService is None:
+                            continue
                         try:
-                            from src.services.watchlist_service import WatchlistService
                             svc = WatchlistService(db)
                             alert_events = []
 
@@ -1428,35 +1450,43 @@ app.add_middleware(
 
 _route_settings = get_settings()
 
+
+def _include_optional_legacy_router(module_name: str, *, prefix: str = "/api/v1") -> bool:
+    """Include a legacy router only if its archived module still exists."""
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        logger.warning("Legacy router unavailable (%s): %s", module_name, exc)
+        return False
+
+    router = getattr(module, "router", None)
+    if router is None:
+        logger.warning("Legacy router module has no router (%s)", module_name)
+        return False
+    app.include_router(router, prefix=prefix)
+    return True
+
+
 app.include_router(health.router)
 if _route_settings.scanner_routes_enabled:
-    from src.api.routes import scanner
-    app.include_router(scanner.router, prefix="/api/v1")
+    _include_optional_legacy_router("src.api.routes.scanner")
 if _route_settings.legacy_signals_enabled:
-    from src.api.routes import signals
-    app.include_router(signals.router, prefix="/api/v1")
+    _include_optional_legacy_router("src.api.routes.signals")
 if _route_settings.watchlist_enabled:
-    from src.api.routes import watchlist
-    app.include_router(watchlist.router, prefix="/api/v1")
+    _include_optional_legacy_router("src.api.routes.watchlist")
 if _route_settings.dip_bounce_enabled:
-    from src.api.routes import models
-    app.include_router(models.router, prefix="/api/v1")
+    _include_optional_legacy_router("src.api.routes.models")
 if _route_settings.analysis_routes_enabled:
-    from src.api.routes import analysis
-    app.include_router(analysis.router, prefix="/api/v1")
+    _include_optional_legacy_router("src.api.routes.analysis")
 if _route_settings.backtest_enabled:
-    from src.api.routes import backtest
-    app.include_router(backtest.router, prefix="/api/v1")
+    _include_optional_legacy_router("src.api.routes.backtest")
 if _route_settings.intelligence_routes_enabled:
-    from src.api.routes import intelligence
-    app.include_router(intelligence.router, prefix="/api/v1")
+    _include_optional_legacy_router("src.api.routes.intelligence")
 app.include_router(news.router, prefix="/api/v1")
 if _route_settings.htf_routes_enabled:
-    from src.api.routes import htf_scan
-    app.include_router(htf_scan.router, prefix="/api/v1")  # V9: HTF-Aware Scanner
+    _include_optional_legacy_router("src.api.routes.htf_scan")  # V9: HTF-Aware Scanner
 if _route_settings.paper_trading_system_enabled:
-    from src.api.routes import paper_trading
-    app.include_router(paper_trading.router, prefix="/api/v1")  # V10: Paper Trading + Validation + Calibration
+    _include_optional_legacy_router("src.api.routes.paper_trading")  # V10: Paper Trading + Validation + Calibration
 app.include_router(agentic.router, prefix="/api/v1")  # V11: Agentic Catalyst Momentum Mode
 app.include_router(pre_news.router, prefix="/api/v1")  # Pre-News Volume Anomaly Detector
 app.include_router(historical_training.router, prefix="/api/v1")  # Historical Catalyst Training Engine

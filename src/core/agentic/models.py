@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ── Enums ────────────────────────────────────────────────────────────────────
@@ -245,6 +245,8 @@ class ABCDResult(BaseModel):
 
 class MLPredictionResult(BaseModel):
     """V19 ML advisory prediction for a candidate."""
+    model_config = ConfigDict(protected_namespaces=())
+
     continuation_prob: float = Field(0.5, ge=0, le=1)
     false_alert_prob: float = Field(0.5, ge=0, le=1)
     expected_mfe: float = 0.0

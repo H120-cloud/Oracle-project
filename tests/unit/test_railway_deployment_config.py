@@ -19,6 +19,7 @@ def test_railway_secret_templates_are_git_safe():
     assert ".env.railway" in gitignore or ".env.*" in gitignore
     assert ".env.railway" in dockerignore
     assert "ORACLE_LEAN_MODE=true" in railway_env
+    assert "ORACLE_FRONTEND_AUTH_ENABLED=true" in railway_env
     assert "TELEGRAM_BOT_TOKEN=" in railway_env
     assert "TELEGRAM_CHAT_ID=" in railway_env
 
@@ -61,6 +62,15 @@ def test_main_does_not_directly_import_archived_legacy_routes():
         assert f"from src.api.routes import {route}" not in source
 
     assert "_include_optional_legacy_router" in source
+
+
+def test_main_serves_spa_routes_without_exposing_api_fallback():
+    source = _read("src/main.py")
+
+    assert 'app.mount("/assets"' in source
+    assert '@app.get("/{full_path:path}", include_in_schema=False)' in source
+    assert 'if full_path.startswith("api/")' in source
+    assert "return FileResponse(frontend_index)" in source
 
 
 def test_app_startup_survives_missing_legacy_modules_when_flags_enabled(monkeypatch):

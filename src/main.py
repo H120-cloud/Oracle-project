@@ -21,8 +21,9 @@ from datetime import datetime
 from datetime import timezone, timezone, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.config import get_settings
@@ -1592,9 +1593,23 @@ async def broadcast_watchlist(data: dict):
 
 # ── Static frontend (serve built React app) ─────────────────────────────────
 
-frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
-if os.path.isdir(frontend_dist):
-    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
+frontend_assets = os.path.join(frontend_dist, "assets")
+frontend_index = os.path.join(frontend_dist, "index.html")
+
+if os.path.isdir(frontend_dist) and os.path.isfile(frontend_index):
+    if os.path.isdir(frontend_assets):
+        app.mount("/assets", StaticFiles(directory=frontend_assets), name="frontend-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def frontend_spa(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found")
+
+        requested = os.path.abspath(os.path.join(frontend_dist, full_path))
+        if requested.startswith(frontend_dist) and os.path.isfile(requested):
+            return FileResponse(requested)
+        return FileResponse(frontend_index)
 else:
     @app.get("/")
     def root():

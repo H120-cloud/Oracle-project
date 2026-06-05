@@ -1194,39 +1194,52 @@ class PreNewsDetector:
                 anomaly.state = PreNewsState.EXPIRED
         self._persist_state()
 
-    def should_alert(self, anomaly: PreNewsAnomaly) -> bool:
-        """Check if we should send a Telegram alert for this anomaly (V3)."""
+    def explain_alert_decision(
+        self,
+        anomaly: PreNewsAnomaly,
+        *,
+        now: Optional[datetime] = None,
+    ) -> dict[str, Any]:
+        """Return the exact Pre-News Telegram gate decision and block reasons."""
+        reasons: list[str] = []
         if anomaly.pre_news_suspicion_score < 75:
-            return False
+            reasons.append("score_below_75")
 
         # V3 — suppress if alert quality is poor
         if anomaly.alert_quality in ("suppressed", "trap_risk"):
-            return False
+            reasons.append(f"alert_quality_{anomaly.alert_quality}")
         if anomaly.alert_quality == "late" and anomaly.pre_news_suspicion_score < 85:
-            return False
+            reasons.append("late_quality_score_below_85")
 
         # Already alerted and score hasn't improved enough
         if anomaly.alert_sent:
             if anomaly.pre_news_suspicion_score < anomaly.last_alert_score + SCORE_RESEND_DELTA:
-                return False
+                reasons.append("already_alerted_score_delta_too_small")
 
         # In-memory cooldown for same-scan duplicates
-        now = datetime.now(timezone.utc)
+        now = now or datetime.now(timezone.utc)
         last = self._alert_cooldowns.get(anomaly.ticker)
         if last and (now - last).total_seconds() < ALERT_COOLDOWN_MINUTES * 60:
-            return False
+            reasons.append("cooldown_active")
 
         # Suppress if price extended or volume fading
         if anomaly.price_behaviour.behaviour == PriceBehaviour.ALREADY_EXTENDED:
-            return False
+            reasons.append("already_extended")
         if (anomaly.volume_metrics.volume_acceleration or 0) < -0.3:
-            return False
+            reasons.append("volume_fading")
 
         # V3 — suppress if too many suppression reasons
         if len(anomaly.alert_suppression_reasons) >= 3:
-            return False
+            reasons.append("too_many_suppression_reasons")
 
-        return True
+        return {
+            "should_alert": not reasons,
+            "reasons": reasons,
+        }
+
+    def should_alert(self, anomaly: PreNewsAnomaly) -> bool:
+        """Check if we should send a Telegram alert for this anomaly (V3)."""
+        return bool(self.explain_alert_decision(anomaly)["should_alert"])
 
     def format_alert(self, anomaly: PreNewsAnomaly) -> str:
         """Format Telegram alert message (V2: informed-positioning fields)."""

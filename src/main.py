@@ -228,29 +228,64 @@ async def _pre_news_scan_loop():
 
             # ── Telegram alerts for EXTREME score anomalies ────────────────
             from src.services.telegram_service import send_telegram_alert
+            from src.core.agentic.pre_news_alert_audit import record_pre_news_alert_decision
             validation_tracker = PreNewsValidationTracker()
             for anomaly in anomalies:
-                if detector.should_alert(anomaly):
+                alert_decision = detector.explain_alert_decision(anomaly)
+                if alert_decision["should_alert"]:
+                    sent = False
+                    telegram_error = None
                     msg = detector.format_alert(anomaly)
                     alert_id = f"pre_news:{anomaly.ticker}:{anomaly.detected_at.isoformat()}"
-                    sent = await send_telegram_alert(
-                        msg,
-                        parse_mode="HTML",
-                        alert_id=alert_id,
-                        ticker=anomaly.ticker,
-                        alert_type="pre_news",
-                        priority=3,
-                    )
-                    detector.mark_alert_sent(anomaly.ticker)
-                    if sent:
-                        logger.info("PreNews Telegram alert sent for %s (score=%s)", anomaly.ticker, anomaly.pre_news_suspicion_score)
-                        validation_tracker.record_alert(anomaly.ticker)
-                    else:
-                        logger.warning(
-                            "PreNews Telegram alert queued/pending for %s (score=%s)",
-                            anomaly.ticker,
-                            anomaly.pre_news_suspicion_score,
+                    try:
+                        sent = await send_telegram_alert(
+                            msg,
+                            parse_mode="HTML",
+                            alert_id=alert_id,
+                            ticker=anomaly.ticker,
+                            alert_type="pre_news",
+                            priority=3,
                         )
+                        detector.mark_alert_sent(anomaly.ticker)
+                        if sent:
+                            logger.info("PreNews Telegram alert sent for %s (score=%s)", anomaly.ticker, anomaly.pre_news_suspicion_score)
+                            validation_tracker.record_alert(anomaly.ticker)
+                        else:
+                            logger.warning(
+                                "PreNews Telegram alert queued/pending for %s (score=%s)",
+                                anomaly.ticker,
+                                anomaly.pre_news_suspicion_score,
+                            )
+                    except Exception as exc:
+                        telegram_error = str(exc)
+                        logger.exception("PreNews Telegram alert failed for %s", anomaly.ticker)
+                    finally:
+                        try:
+                            record_pre_news_alert_decision(
+                                anomaly,
+                                alert_decision,
+                                telegram_attempted=True,
+                                telegram_sent=sent,
+                                telegram_error=telegram_error,
+                            )
+                        except Exception as audit_exc:
+                            logger.debug("PreNews alert audit write failed for %s: %s", anomaly.ticker, audit_exc)
+                else:
+                    logger.info(
+                        "PreNews Telegram gate blocked %s score=%.0f reasons=%s",
+                        anomaly.ticker,
+                        anomaly.pre_news_suspicion_score,
+                        ",".join(alert_decision["reasons"]) or "none",
+                    )
+                    try:
+                        record_pre_news_alert_decision(
+                            anomaly,
+                            alert_decision,
+                            telegram_attempted=False,
+                            telegram_sent=False,
+                        )
+                    except Exception as audit_exc:
+                        logger.debug("PreNews alert audit write failed for %s: %s", anomaly.ticker, audit_exc)
 
             # ── V2: Agentic handoff via centralized orchestrator method ────
             from src.core.agentic.orchestrator import AgenticOrchestrator

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 EOD_REPORT_FILE = DATA_DIR / "news_momentum_eod_reports.json"
 
 # Only review tickers that moved at least this much intraday

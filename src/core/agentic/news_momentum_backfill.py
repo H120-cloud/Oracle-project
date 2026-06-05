@@ -39,7 +39,7 @@ from src.services.market_data import get_market_data_provider
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 SHADOW_FILE = DATA_DIR / "news_momentum_shadow_alerts.json"
 CANDIDATE_FILE = DATA_DIR / "news_momentum_candidates.json"
 BACKFILL_DIR = DATA_DIR / "backfill_runs"

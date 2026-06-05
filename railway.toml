@@ -1,3 +1,12 @@
+# ── PERSISTENT VOLUME (REQUIRED) ─────────────────────────────────────────────
+# Railway volumes are not created via config-as-code; attach one in the
+# dashboard (or CLI) and mount it at /app/data:
+#     railway volume add --mount-path /app/data
+# Railway then injects RAILWAY_VOLUME_MOUNT_PATH=/app/data into the container.
+# The app's startup guard (src/utils/data_paths.verify_persistent_data_dir)
+# fails the boot if this is missing, so redeploys cannot silently wipe state.
+# All agentic state lives under AGENTIC_DATA_DIR=/app/data/agentic (see .env.railway).
+
 [build]
 builder = "DOCKERFILE"
 

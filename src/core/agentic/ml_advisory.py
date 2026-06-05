@@ -81,7 +81,7 @@ from src.core.agentic.models import (
 logger = logging.getLogger(__name__)
 
 # ── Paths ─────────────────────────────────────────────────────────────
-DATA_DIR = Path(__file__).parent.parent.parent.parent / "data" / "agentic"
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 MODEL_DIR = DATA_DIR / "ml_models"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -18,6 +18,7 @@ import json
 import logging
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from src.utils.data_paths import agentic_data_dir, agentic_path
 from typing import Optional
 
 from src.core.agentic.pre_news_models import (
@@ -28,7 +29,7 @@ from src.core.agentic.pre_news_models import (
 
 logger = logging.getLogger(__name__)
 
-_ANOMALIES_FILE = Path("data/agentic/pre_news_anomalies.json")
+_ANOMALIES_FILE = agentic_path("pre_news_anomalies.json")
 _CACHE_TTL = timedelta(minutes=5)
 _last_load: Optional[datetime] = None
 _cached_anomalies: dict[str, dict] = {}

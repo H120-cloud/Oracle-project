@@ -26,3 +26,8 @@ data/
 *~
 .DS_Store
 Thumbs.db
+
+# Baseline seed artifacts ship in the image / repo despite the global
+# *.joblib / *.parquet / data ignores above (Railway persistence P0).
+!seed/
+!seed/**

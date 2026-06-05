@@ -21,7 +21,7 @@ from src.utils.atomic_json import save_json_file, load_json_file
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 NLP_MODEL_FILE = DATA_DIR / "news_momentum_nlp_model.joblib"
 NLP_META_FILE = DATA_DIR / "news_momentum_nlp_meta.json"
 

@@ -25,7 +25,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 SHADOW_FILE = DATA_DIR / "pre_news_shadow_v2.json"
 
 # Qualifying accumulation/early-volume archetypes for the V2 gate (strings, to

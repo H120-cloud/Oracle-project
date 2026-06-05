@@ -9,6 +9,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from src.utils.data_paths import agentic_data_dir, agentic_path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import joblib
@@ -40,8 +41,8 @@ TARGET_DEFINITIONS: Mapping[str, set[str]] = {
     "binary_monster_plus": MONSTER_PLUS_LABELS,
 }
 
-DEFAULT_INPUT = Path("data/agentic/rocket_training_dataset_reconstructed_v2_full.parquet")
-DEFAULT_MODEL_PATH = Path("data/agentic/rocket_catboost_baseline_shadow.joblib")
+DEFAULT_INPUT = agentic_path("rocket_training_dataset_reconstructed_v2_full.parquet")
+DEFAULT_MODEL_PATH = agentic_path("rocket_catboost_baseline_shadow.joblib")
 DEFAULT_REPORT_PATH = Path("docs/rocket_catboost_baseline_report.md")
 
 RULE_SCORE_COLUMNS = [

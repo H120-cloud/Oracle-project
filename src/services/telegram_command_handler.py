@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = 3.0  # seconds between polls
 ANALYSIS_TIMEOUT = 30.0  # seconds for analysis to complete
-AGENTIC_DATA_DIR = Path(os.environ.get("AGENTIC_DATA_DIR", "data/agentic"))
+from src.utils.data_paths import AGENTIC_DATA_DIR
 
 _settings = get_settings()
 LEGACY_TELEGRAM_COMMANDS_ENABLED = not _settings.oracle_lean_mode

@@ -7,6 +7,7 @@ Follows existing FastAPI style in the project.
 
 import logging
 from pathlib import Path
+from src.utils.data_paths import agentic_data_dir, agentic_path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -284,7 +285,7 @@ async def trigger_success_rate_analysis():
 @router.get("/evaluation/report")
 async def get_success_rate_report():
     """Return the latest success-rate report JSON."""
-    report_path = Path("data/agentic/evaluation_reports/pre_news_success_rate_report.json")
+    report_path = agentic_path("evaluation_reports", "pre_news_success_rate_report.json")
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="No success-rate report found. Run /evaluation/analyze first.")
     try:
@@ -300,7 +301,7 @@ async def get_success_rate_report():
 @router.get("/evaluation/report/markdown")
 async def get_success_rate_report_md():
     """Return the latest success-rate report as Markdown text."""
-    report_path = Path("data/agentic/evaluation_reports/pre_news_success_rate_report.md")
+    report_path = agentic_path("evaluation_reports", "pre_news_success_rate_report.md")
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="No success-rate report found. Run /evaluation/analyze first.")
     try:

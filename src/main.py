@@ -29,7 +29,12 @@ from fastapi.staticfiles import StaticFiles
 from src.config import get_settings
 from src.models.database import Base
 from src.db.session import engine, SessionLocal
-from src.api.routes import health, news, agentic, pre_news, historical_training, news_momentum, sec_intelligence, frontend_auth, timing_reviews
+from src.utils.data_paths import (
+    agentic_data_dir,
+    seed_agentic_data_dir,
+    verify_persistent_data_dir,
+)
+from src.api.routes import health, news, agentic, pre_news, historical_training, news_momentum, sec_intelligence, frontend_auth, timing_reviews, admin_diagnostics
 from src.core.agentic.news_momentum_orchestrator import NewsMomentumOrchestrator
 from src.core.agentic.pre_news_detector import PreNewsDetector
 from src.core.agentic.pre_news_evaluator import PreNewsEvaluator
@@ -1537,6 +1542,22 @@ async def lifespan(app: FastAPI):
     logger.info("Oracle V5 starting (env=%s)", settings.app_env)
     _log_lean_mode_status(settings)
 
+    # Persistence guard (Railway P0): fail loudly rather than silently losing all
+    # agentic state on the next redeploy/restart if no volume is mounted.
+    verify_persistent_data_dir()
+    data_dir = agentic_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Agentic data dir: %s", data_dir.resolve())
+
+    # Seed baseline artifacts (ML model, company-name map) into an empty/restored
+    # volume. Never overwrites live state.
+    try:
+        seeded = seed_agentic_data_dir()
+        if seeded:
+            logger.info("Seeded %d baseline artifact(s): %s", len(seeded), seeded)
+    except Exception as exc:
+        logger.warning("Baseline seeding skipped: %s", exc)
+
     # Create tables if they don't exist (preserves data across restarts)
     Base.metadata.create_all(bind=engine, checkfirst=True)
     logger.info("Database tables ensured")
@@ -1718,6 +1739,7 @@ app.include_router(historical_training.router, prefix="/api/v1")  # Historical C
 app.include_router(news_momentum.router, prefix="/api/v1")  # V22: News Momentum Intelligence System
 app.include_router(timing_reviews.router, prefix="/api/v1")  # Timing Intelligence reviews
 app.include_router(sec_intelligence.router, prefix="/api/v1")  # V23: SEC Filing Intelligence & Dilution Risk Engine
+app.include_router(admin_diagnostics.router, prefix="/api/v1")  # Admin Diagnostics (read-only observability)
 
 
 # ── WebSocket — real-time signal streaming ──────────────────────────────────

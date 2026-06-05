@@ -23,7 +23,8 @@ from src.core.agentic.historical_models import CalibrationWeights
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = os.environ.get("AGENTIC_DATA_DIR", "data/agentic")
+from src.utils.data_paths import agentic_data_dir as _agentic_data_dir
+DATA_DIR = str(_agentic_data_dir())
 
 
 def _weights_path() -> str:

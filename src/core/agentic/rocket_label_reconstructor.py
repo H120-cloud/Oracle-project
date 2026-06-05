@@ -11,6 +11,7 @@ import json
 import math
 from collections import Counter
 from pathlib import Path
+from src.utils.data_paths import agentic_data_dir, agentic_path
 from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -405,7 +406,7 @@ def render_markdown_report(report: Dict[str, Any]) -> str:
 def write_reconstructed_exports(
     df: pd.DataFrame,
     *,
-    data_dir: Path | str = Path("data/agentic"),
+    data_dir: Path | str = agentic_data_dir(),
     docs_dir: Path | str = Path("docs"),
 ) -> Dict[str, str]:
     """Write separate reconstructed exports and their Markdown coverage report."""
@@ -431,7 +432,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--input",
-        default="data/agentic/rocket_training_dataset.parquet",
+        default=str(agentic_path("rocket_training_dataset.parquet")),
         help="Existing Rocket CSV or Parquet export.",
     )
     parser.add_argument(
@@ -439,7 +440,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         action="store_true",
         help="Label lower-bound positives from partial windows separately.",
     )
-    parser.add_argument("--data-dir", default="data/agentic")
+    parser.add_argument("--data-dir", default=str(agentic_data_dir()))
     parser.add_argument("--docs-dir", default="docs")
     args = parser.parse_args(list(argv) if argv is not None else None)
 

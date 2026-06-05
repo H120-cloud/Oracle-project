@@ -16,6 +16,7 @@ import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from src.utils.data_paths import agentic_data_dir, agentic_path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -35,8 +36,8 @@ from src.utils.atomic_json import load_json_file, save_json_file
 logger = logging.getLogger(__name__)
 
 ENGINE_VERSION = "rocket_forward_enrichment_v2"
-DEFAULT_STATE_DIR = Path("data/agentic/rocket_forward_enrichment")
-DEFAULT_INPUT = Path("data/agentic/rocket_training_dataset_reconstructed.parquet")
+DEFAULT_STATE_DIR = agentic_path("rocket_forward_enrichment")
+DEFAULT_INPUT = agentic_path("rocket_training_dataset_reconstructed.parquet")
 DEFAULT_SMOKE_ROWS = 30
 
 
@@ -595,7 +596,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         if column not in output.columns:
             output[column] = None
     output.loc[enriched_selected.index, enriched_selected.columns] = enriched_selected
-    data_dir = Path("data/agentic")
+    data_dir = agentic_data_dir()
     csv_path = data_dir / f"{args.output_prefix}.csv"
     parquet_path = data_dir / f"{args.output_prefix}.parquet"
     rejection_csv_path = data_dir / f"{args.output_prefix}_synthetic_rejections.csv"

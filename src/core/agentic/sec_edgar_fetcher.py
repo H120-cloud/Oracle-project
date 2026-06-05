@@ -22,6 +22,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from src.utils.data_paths import agentic_data_dir, agentic_path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -35,7 +36,7 @@ SEC_USER_AGENT = os.environ.get(
     "Oracle Research oracle-research@example.com",
 )
 
-DATA_DIR = Path("data/agentic/sec")
+DATA_DIR = agentic_path("sec")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 TICKER_CIK_CACHE_FILE = DATA_DIR / "ticker_cik_map.json"

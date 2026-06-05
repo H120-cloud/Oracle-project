@@ -13,6 +13,7 @@ import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from src.utils.data_paths import agentic_data_dir, agentic_path
 from typing import Any, Mapping, Optional
 
 import joblib
@@ -26,8 +27,8 @@ from src.core.agentic.rocket_dataset_builder import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_PATH = Path("data/agentic/rocket_catboost_baseline_shadow.joblib")
-DEFAULT_PREDICTIONS_PATH = Path("data/agentic/rocket_model_shadow_predictions.jsonl")
+DEFAULT_MODEL_PATH = agentic_path("rocket_catboost_baseline_shadow.joblib")
+DEFAULT_PREDICTIONS_PATH = agentic_path("rocket_model_shadow_predictions.jsonl")
 
 _TARGETS = ("binary_runner", "binary_major_plus", "binary_monster_plus")
 _CATEGORICAL_DEFAULTS = {

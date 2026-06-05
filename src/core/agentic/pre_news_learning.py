@@ -36,7 +36,7 @@ from src.core.agentic.pre_news_models import (
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 OUTCOMES_FILE = DATA_DIR / "pre_news_outcomes.json"
 MISSED_FILE = DATA_DIR / "pre_news_missed.json"
 

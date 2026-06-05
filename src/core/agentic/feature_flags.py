@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 FLAGS_FILE = DATA_DIR / "feature_flags.json"
 
 

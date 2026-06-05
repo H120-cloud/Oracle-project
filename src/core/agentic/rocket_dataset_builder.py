@@ -26,6 +26,7 @@ import math
 import time as _time_module
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from src.utils.data_paths import agentic_data_dir, agentic_path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -103,7 +104,7 @@ _FETCH_DELAY: float = 0.25  # seconds between external API calls
 # Default path constants
 # ---------------------------------------------------------------------------
 
-_DEFAULT_DATA_DIR: Path = Path("data/agentic")
+_DEFAULT_DATA_DIR: Path = agentic_data_dir()
 _DEFAULT_DOCS_DIR: Path = Path("docs")
 
 # ---------------------------------------------------------------------------

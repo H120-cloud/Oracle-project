@@ -4,6 +4,7 @@ import {
   Activity,
   Brain,
   Clock,
+  Gauge,
   Newspaper,
   Rocket,
   Zap,
@@ -14,6 +15,7 @@ import HistoricalTraining from './pages/HistoricalTraining'
 import NewsMomentum from './pages/NewsMomentum'
 import SECIntelligence from './pages/SECIntelligence'
 import TimingReview from './pages/TimingReview'
+import Diagnostics from './pages/Diagnostics'
 import FrontendAuthGate from './components/FrontendAuthGate'
 
 const NAV = [
@@ -23,6 +25,7 @@ const NAV = [
   { to: '/sec-intelligence', icon: Brain, label: 'SEC Intelligence' },
   { to: '/historical-training', icon: Brain, label: 'Historical Training' },
   { to: '/news', icon: Newspaper, label: 'News Feed' },
+  { to: '/diagnostics', icon: Gauge, label: 'Diagnostics' },
 ]
 
 function Sidebar() {
@@ -77,6 +80,7 @@ export default function App() {
               <Route path="/timing-review" element={<TimingReview />} />
               <Route path="/sec-intelligence" element={<SECIntelligence />} />
               <Route path="/historical-training" element={<HistoricalTraining />} />
+              <Route path="/diagnostics" element={<Diagnostics />} />
               <Route path="*" element={<Navigate to="/news-momentum" replace />} />
             </Routes>
           </Suspense>

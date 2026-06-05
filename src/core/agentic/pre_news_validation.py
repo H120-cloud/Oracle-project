@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 VALIDATION_FILE = DATA_DIR / "pre_news_validation.json"
 WEEKLY_REPORTS_DIR = DATA_DIR / "validation_reports"
 

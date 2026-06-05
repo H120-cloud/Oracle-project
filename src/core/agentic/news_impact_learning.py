@@ -28,7 +28,7 @@ from src.utils.atomic_json import save_json_file, load_json_file
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path(os.environ.get("AGENTIC_DATA_DIR", "data/agentic"))
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 OUTCOMES_PATH = DATA_DIR / "news_impact_outcomes.json"
 STATS_PATH = DATA_DIR / "news_impact_stats.json"
 

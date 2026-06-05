@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 
-DATA_DIR = Path(os.environ.get("AGENTIC_DATA_DIR", "data/agentic"))
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 TRACE_FILE = DATA_DIR / "news_alert_latency_trace.jsonl"
 _LOCK = threading.Lock()
 

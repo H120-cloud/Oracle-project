@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 SHADOW_FILE = DATA_DIR / "news_momentum_shadow_alerts.json"
 
 # ── Rolling-window limits ─────────────────────────────────────────────────

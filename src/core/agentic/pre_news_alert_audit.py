@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 
-DATA_DIR = Path(os.environ.get("AGENTIC_DATA_DIR", "data/agentic"))
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 DEFAULT_AUDIT_PATH = DATA_DIR / "pre_news_alert_decisions.jsonl"
 
 

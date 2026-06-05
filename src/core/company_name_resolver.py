@@ -20,6 +20,7 @@ import json
 import logging
 import re
 import time
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
 
@@ -27,7 +28,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 NAME_MAP_CACHE = DATA_DIR / "company_name_ticker_map.json"
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_USER_AGENT = "Oracle research oracle@example.com"
@@ -52,12 +53,42 @@ def normalize_name(name: str) -> str:
     return n
 
 
+# Generic financial markers / corporate designators that must NEVER drive a
+# match on their own. A name made only of these (e.g. "Global Holdings Group")
+# resolves to nothing. Distinct from _SUFFIXES (which is about normalization);
+# this set is about *significance* of the remaining tokens.
+_GENERIC_TOKENS = frozenset({
+    "global", "international", "technologies", "technology", "holdings",
+    "holding", "group", "groupe", "corp", "corporation", "inc", "incorporated",
+    "company", "co", "partners", "partner", "industries", "systems", "solutions",
+    "enterprises", "enterprise", "capital", "financial", "ventures", "venture",
+    "labs", "laboratories", "resources", "acquisition", "acquisitions", "trust",
+    "fund", "funds", "limited", "ltd", "plc", "llc", "lp", "sa", "nv", "ag",
+    "the", "class", "common", "stock", "ord", "ordinary", "shares", "adr",
+    "ads", "new", "american", "us", "usa", "national", "associates", "company",
+})
+
+# Minimum difflib similarity ratio for a non-exact (fuzzy) match. Chosen to
+# accept benign designator drift ("Technology" vs "Technologies": ~0.97;
+# "Apple Hospitality" vs "Apple Hospitality REIT": ~0.87) while rejecting
+# prefix-magnet false matches ("Plug Power Solutions ..." vs "Plug Power":
+# ~0.48; "Apple Hospitality" vs "Apple": 0.5).
+_MIN_FUZZY_RATIO = 0.85
+
+
+def _significant_tokens(normalized: str) -> list[str]:
+    """Tokens of a normalized name that carry company identity (non-generic)."""
+    return [t for t in normalized.split() if t and t not in _GENERIC_TOKENS]
+
+
 class CompanyNameResolver:
     _instance: Optional["CompanyNameResolver"] = None
 
     def __init__(self):
         self._map: dict[str, str] = {}
         self._loaded = False
+        # first-significant-token -> list of normalized map keys (built lazily).
+        self._index: Optional[dict[str, list[str]]] = None
 
     @classmethod
     def instance(cls) -> "CompanyNameResolver":
@@ -72,6 +103,7 @@ class CompanyNameResolver:
             if (time.time() - NAME_MAP_CACHE.stat().st_mtime) > CACHE_MAX_AGE_SECONDS:
                 return False
             self._map = json.loads(NAME_MAP_CACHE.read_text())
+            self._index = None
             return bool(self._map)
         except Exception:
             return False
@@ -91,6 +123,7 @@ class CompanyNameResolver:
                 if t and nm and nm not in mapping:
                     mapping[nm] = t
             self._map = mapping
+            self._index = None
             try:
                 DATA_DIR.mkdir(parents=True, exist_ok=True)
                 NAME_MAP_CACHE.write_text(json.dumps(mapping))
@@ -107,28 +140,73 @@ class CompanyNameResolver:
             self._build_from_sec()
         self._loaded = True
 
+    def _ensure_index(self) -> None:
+        """Bucket map keys by their first significant token for fast, scoped
+        fuzzy lookup. Rebuilt whenever the map identity changes."""
+        if self._index is not None:
+            return
+        index: dict[str, list[str]] = {}
+        for key in self._map:
+            sig = _significant_tokens(key)
+            if not sig:
+                continue
+            index.setdefault(sig[0], []).append(key)
+        self._index = index
+
     def resolve(self, name: str) -> Optional[str]:
-        """Return a US ticker for a company name, or None if no confident match."""
+        """Return a US ticker for a company name, or None if no confident match.
+
+        Resolution is strict and deterministic — it never guesses a high-cap
+        ticker from a shared prefix:
+
+        1. Exact normalized match wins.
+        2. Otherwise, candidates are limited to map entries sharing the query's
+           first *significant* (non-generic) token, and the best one must clear
+           a string-distance threshold AND be token-compatible (one name's
+           significant tokens a subset of the other's).
+        3. Names that are entirely generic ("Global Holdings Group") or fall
+           below the threshold return None.
+        """
         self._ensure_loaded()
         if not self._map:
             return None
         nm = normalize_name(name)
         if not nm:
             return None
-        # exact normalized match
+
+        # 1. Exact normalized match — highest confidence.
         hit = self._map.get(nm)
         if hit:
             return hit
-        # try the leading 2-3 word prefix (handles "Bitmine Immersion
-        # Technologies" matching "bitmine immersion technologies" exactly, and
-        # longer descriptive names where the registered name is shorter).
-        words = nm.split()
-        for k in (3, 2):
-            if len(words) > k:
-                prefix = " ".join(words[:k])
-                hit = self._map.get(prefix)
-                if hit:
-                    return hit
+
+        # 2. Fuzzy, scoped to a single first-significant-token bucket.
+        query_sig = _significant_tokens(nm)
+        if not query_sig:
+            logger.debug("CompanyNameResolver: '%s' is all-generic — dropping", name)
+            return None
+
+        self._ensure_index()
+        candidates = (self._index or {}).get(query_sig[0], [])
+        query_set = set(query_sig)
+
+        best_key: Optional[str] = None
+        best_ratio = 0.0
+        for key in candidates:
+            key_set = set(_significant_tokens(key))
+            # Token-compatibility: one name must be contained in the other.
+            if not (query_set <= key_set or key_set <= query_set):
+                continue
+            ratio = SequenceMatcher(None, nm, key).ratio()
+            if ratio > best_ratio:
+                best_ratio, best_key = ratio, key
+
+        if best_key is not None and best_ratio >= _MIN_FUZZY_RATIO:
+            return self._map[best_key]
+
+        logger.debug(
+            "CompanyNameResolver: no confident match for '%s' (best=%.3f) — dropping",
+            name, best_ratio,
+        )
         return None
 
 

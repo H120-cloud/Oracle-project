@@ -22,6 +22,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from src.utils.data_paths import agentic_data_dir, agentic_path
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
@@ -55,7 +56,7 @@ from src.core.agentic.sec_scoring_engine import (
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic/sec")
+DATA_DIR = agentic_path("sec")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 CANDIDATES_FILE = DATA_DIR / "candidates.json"

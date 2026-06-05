@@ -84,7 +84,7 @@ from src.core.agentic.news_alert_latency_trace import trace_candidate
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path(os.environ.get("AGENTIC_DATA_DIR", "data/agentic"))
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 CANDIDATES_FILE = DATA_DIR / "news_momentum_candidates.json"
 
 # Catalyst sub-types historically printing > 40% win rate. Used both by the
@@ -1231,6 +1231,36 @@ class NewsMomentumOrchestrator:
                         pass
         return sent_count
 
+    def _mark_if_obsolete_on_arrival(
+        self, c: NewsMomentumCandidate, now: Optional[datetime] = None
+    ) -> bool:
+        """Flag a candidate whose news was published outside the obsolescence
+        window, so the breaking/first-mover speed tiers are suppressed.
+
+        Deterministic: compares the provider's publication time against the
+        current UTC clock. Returns True if the candidate is stale-on-arrival.
+        The candidate is NOT dropped — it still flows through the normal
+        delayed-reaction path and the 12h freshness gates.
+        """
+        now = now or datetime.now(timezone.utc)
+        published_at = _aware_utc(c.published_at)
+        if published_at is None:
+            return False
+        config = getattr(self, "config", None)
+        window = int(getattr(config, "breaking_obsolescence_window_seconds", 300) or 300)
+        age_seconds = (now - published_at).total_seconds()
+        if age_seconds > window:
+            c._stale_on_arrival = True  # type: ignore[attr-defined]
+            logger.warning(
+                "NewsMomentum: obsolete feed item for %s — published %.0fs ago "
+                "(> %ds obsolescence window); suppressing breaking/first-mover "
+                "treatment. source=%s headline=%r",
+                c.ticker, age_seconds, window,
+                getattr(c.source, "value", c.source), (c.headline or "")[:160],
+            )
+            return True
+        return False
+
     async def _process_event(
         self,
         event: NewsEvent,
@@ -1293,6 +1323,11 @@ class NewsMomentumOrchestrator:
             is_negative=event.is_negative,
             is_vague=event.is_vague,
         )
+
+        # Obsolescence gate (upstream-feed delay): a headline served long after
+        # its publication time must not masquerade as a fresh breaking catalyst.
+        # This runs BEFORE fast-path WATCH / enrichment / classification.
+        self._mark_if_obsolete_on_arrival(c, now)
 
         await self._send_fast_path_watch(c)
 
@@ -1377,6 +1412,9 @@ class NewsMomentumOrchestrator:
 
     def _is_fast_path_watch_eligible(self, c: NewsMomentumCandidate) -> bool:
         if c.fast_path_watch_sent or c.telegram_sent:
+            return False
+        # Obsolescence gate: a stale-on-arrival headline is never a fast WATCH.
+        if getattr(c, "_stale_on_arrival", False):
             return False
         if c.source not in _FAST_PATH_VERIFIED_SOURCES:
             return False
@@ -2046,6 +2084,7 @@ class NewsMomentumOrchestrator:
                     and 0 <= published_age_secs <= max_age
                     and 0 <= detected_age_secs <= max_age
                     and c.freshness_confidence == "HIGH"
+                    and not getattr(c, "_stale_on_arrival", False)
                     and _headline_is_fresh_bullish(c.headline, c.is_negative,
                                                    c.trap_risk, c.dilution_risk)):
                 first_mover = True

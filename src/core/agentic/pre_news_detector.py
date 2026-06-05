@@ -90,7 +90,7 @@ logger = logging.getLogger(__name__)
 
 configure_yfinance_cache(yf)
 
-DATA_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 ANOMALIES_FILE = DATA_DIR / "pre_news_anomalies.json"
 ALERT_COOLDOWN_MINUTES = 30
 SCORE_RESEND_DELTA = 10  # only re-alert if score improves by 10+

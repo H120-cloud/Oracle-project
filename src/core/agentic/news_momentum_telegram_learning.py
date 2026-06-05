@@ -25,7 +25,7 @@ from src.utils.atomic_json import save_json_file, load_json_file
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path(os.environ.get("AGENTIC_DATA_DIR", "data/agentic"))
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 ALERTS_FILE = DATA_DIR / "news_momentum_telegram_alerts.json"
 
 MIN_ALERTS_FOR_ADAPTATION = 100

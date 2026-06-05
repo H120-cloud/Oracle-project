@@ -33,7 +33,7 @@ from src.utils.atomic_json import load_json_file, save_json_file
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 SECTOR_HYPE_FILE = DATA_DIR / "news_momentum_sector_hype.json"
 
 

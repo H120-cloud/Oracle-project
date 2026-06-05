@@ -924,6 +924,13 @@ class NewsMomentumConfig(BaseModel):
     # catalysts alert before the spike, accepting more false positives. The
     # cost of a missed +500% mover outweighs a few duds (user preference).
     first_mover_max_age_seconds: int = 300
+    # Upstream-feed obsolescence window. If an aggregator (StockTitan, SEC RSS,
+    # Finviz) serves a headline whose publication time is older than this, it
+    # must never be treated as a fresh BREAKING catalyst (first-mover / fast
+    # WATCH / bullish-flash speed tiers) just because Oracle detected it now.
+    # It still flows through the normal delayed-reaction path and the 12h
+    # freshness gates (news_max_age_hours) — this only strips speed-tier status.
+    breaking_obsolescence_window_seconds: int = 300
     first_mover_min_impact: float = 20.0
     first_mover_min_return: float = 20.0
     first_mover_min_continuation: float = 15.0

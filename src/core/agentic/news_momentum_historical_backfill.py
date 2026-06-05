@@ -63,7 +63,7 @@ from src.utils.atomic_json import save_json_file, load_json_file
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 BACKFILL_RECORDS_FILE = DATA_DIR / "news_momentum_backfill_records.json"
 BACKFILL_PROGRESS_FILE = DATA_DIR / "news_momentum_backfill_progress.json"
 

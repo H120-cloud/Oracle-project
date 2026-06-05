@@ -10,7 +10,7 @@ from typing import Any
 from src.core.agentic.models import AgenticCandidate
 
 logger = logging.getLogger(__name__)
-DATA_DIR = Path(os.environ.get("AGENTIC_DATA_DIR", "data/agentic"))
+from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 
 MIN_TOTAL_OUTCOMES = 100
 MIN_PER_CATALYST = 30

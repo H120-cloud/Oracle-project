@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 #  PATHS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-BASE_DIR = Path("data/agentic")
+from src.utils.data_paths import AGENTIC_DATA_DIR as BASE_DIR
 BASELINE_SNAPSHOTS_FILE = BASE_DIR / "pre_news_baseline_snapshots.json"
 REPORTS_DIR = BASE_DIR / "evaluation_reports"
 

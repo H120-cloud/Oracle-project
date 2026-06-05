@@ -214,6 +214,7 @@ def parse_sharecast_press_note_html(
                 source="Sharecast",
                 url=urljoin(base_url, href) if href else base_url,
                 timestamp=current_date,
+                timestamp_confidence="LOW",
                 tickers=tickers,
                 category="news",
                 sentiment=_quick_sentiment(text),

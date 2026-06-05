@@ -117,3 +117,28 @@ def test_first_poll_only_seeds_old_filings(monkeypatch):
 
     assert filings == []
     assert "0000000000-26-000002" in seen
+
+
+def test_max_to_emit_does_not_mark_overflow_accessions_seen(monkeypatch):
+    monkeypatch.setattr(sec_edgar_firehose, "_CIK_TICKER_MAP", {"0000863894": "VERU"})
+    fresh = datetime.now(timezone.utc) - timedelta(minutes=5)
+    text = (
+        "<feed>"
+        f"{_entry('0000000000-26-000010', fresh)}"
+        f"{_entry('0000000000-26-000011', fresh)}"
+        "</feed>"
+    )
+    seen: set[str] = set()
+
+    filings = asyncio.run(
+        fetch_current_filings(
+            seen,
+            client=_Client(text),
+            max_to_emit=1,
+            initial_emit_lookback_minutes=30,
+        )
+    )
+
+    assert [f["accession"] for f in filings] == ["0000000000-26-000010"]
+    assert "0000000000-26-000010" in seen
+    assert "0000000000-26-000011" not in seen

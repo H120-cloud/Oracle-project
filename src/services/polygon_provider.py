@@ -30,6 +30,20 @@ BASE_URL = "https://api.polygon.io"
 ET = ZoneInfo("America/New_York")
 
 
+def _limited_client_get(url: str, *, params: dict | None = None, timeout: float = 15.0) -> httpx.Response:
+    """HTTP GET that shares Polygon's global request spacing across helpers."""
+    global _POLYGON_LAST_REQUEST
+    if _POLYGON_MIN_INTERVAL > 0:
+        with _POLYGON_REQUEST_LOCK:
+            elapsed = time.time() - _POLYGON_LAST_REQUEST
+            if elapsed < _POLYGON_MIN_INTERVAL:
+                time.sleep(_POLYGON_MIN_INTERVAL - elapsed)
+            _POLYGON_LAST_REQUEST = time.time()
+
+    with httpx.Client(timeout=timeout) as client:
+        return client.get(url, params=params)
+
+
 def _period_days(period: str | None) -> int:
     if not period:
         return 1
@@ -245,34 +259,33 @@ def fetch_premarket_bars(ticker: str) -> Tuple[Optional[dict], Optional[dict]]:
     )
 
     try:
-        with httpx.Client(timeout=15) as client:
-            r = client.get(url)
-            if r.status_code == 429:
-                logger.debug("Polygon rate limited for %s premarket", ticker)
-                return None, None
-            if r.status_code == 403:
-                logger.debug("Polygon auth failed — check POLYGON_API_KEY")
-                return None, None
-            if r.status_code != 200:
-                logger.debug("Polygon premarket %s returned %s", ticker, r.status_code)
-                return None, None
+        r = _limited_client_get(url, timeout=15)
+        if r.status_code == 429:
+            logger.debug("Polygon rate limited for %s premarket", ticker)
+            return None, None
+        if r.status_code == 403:
+            logger.debug("Polygon auth failed - check POLYGON_API_KEY")
+            return None, None
+        if r.status_code != 200:
+            logger.debug("Polygon premarket %s returned %s", ticker, r.status_code)
+            return None, None
 
-            data = r.json()
-            results = data.get("results", [])
-            if not results:
-                return {"high": 0.0, "low": 0.0, "open": 0.0, "close": 0.0, "volume": 0}, None
+        data = r.json()
+        results = data.get("results", [])
+        if not results:
+            return {"high": 0.0, "low": 0.0, "open": 0.0, "close": 0.0, "volume": 0}, None
 
-            high = max(b.get("h", 0) for b in results)
-            low = min(b.get("l", float("inf")) for b in results)
-            low = low if low != float("inf") else 0.0
-            open_price = results[0].get("o", 0)
-            close_price = results[-1].get("c", 0)
-            volume = sum(b.get("v", 0) for b in results)
+        high = max(b.get("h", 0) for b in results)
+        low = min(b.get("l", float("inf")) for b in results)
+        low = low if low != float("inf") else 0.0
+        open_price = results[0].get("o", 0)
+        close_price = results[-1].get("c", 0)
+        volume = sum(b.get("v", 0) for b in results)
 
-            return (
-                {"high": round(high, 4), "low": round(low, 4), "open": round(open_price, 4), "close": round(close_price, 4), "volume": int(volume)},
-                None,
-            )
+        return (
+            {"high": round(high, 4), "low": round(low, 4), "open": round(open_price, 4), "close": round(close_price, 4), "volume": int(volume)},
+            None,
+        )
     except Exception as e:
         logger.debug("Polygon premarket error for %s: %s", ticker, e)
         return None, None
@@ -305,34 +318,33 @@ def fetch_afterhours_bars(ticker: str) -> Tuple[Optional[dict], Optional[dict]]:
     )
 
     try:
-        with httpx.Client(timeout=15) as client:
-            r = client.get(url)
-            if r.status_code == 429:
-                logger.debug("Polygon rate limited for %s afterhours", ticker)
-                return None, None
-            if r.status_code == 403:
-                logger.debug("Polygon auth failed")
-                return None, None
-            if r.status_code != 200:
-                logger.debug("Polygon afterhours %s returned %s", ticker, r.status_code)
-                return None, None
+        r = _limited_client_get(url, timeout=15)
+        if r.status_code == 429:
+            logger.debug("Polygon rate limited for %s afterhours", ticker)
+            return None, None
+        if r.status_code == 403:
+            logger.debug("Polygon auth failed")
+            return None, None
+        if r.status_code != 200:
+            logger.debug("Polygon afterhours %s returned %s", ticker, r.status_code)
+            return None, None
 
-            data = r.json()
-            results = data.get("results", [])
-            if not results:
-                return {"high": 0.0, "low": 0.0, "open": 0.0, "close": 0.0, "volume": 0}, None
+        data = r.json()
+        results = data.get("results", [])
+        if not results:
+            return {"high": 0.0, "low": 0.0, "open": 0.0, "close": 0.0, "volume": 0}, None
 
-            high = max(b.get("h", 0) for b in results)
-            low = min(b.get("l", float("inf")) for b in results)
-            low = low if low != float("inf") else 0.0
-            open_price = results[0].get("o", 0)
-            close_price = results[-1].get("c", 0)
-            volume = sum(b.get("v", 0) for b in results)
+        high = max(b.get("h", 0) for b in results)
+        low = min(b.get("l", float("inf")) for b in results)
+        low = low if low != float("inf") else 0.0
+        open_price = results[0].get("o", 0)
+        close_price = results[-1].get("c", 0)
+        volume = sum(b.get("v", 0) for b in results)
 
-            return (
-                {"high": round(high, 4), "low": round(low, 4), "open": round(open_price, 4), "close": round(close_price, 4), "volume": int(volume)},
-                None,
-            )
+        return (
+            {"high": round(high, 4), "low": round(low, 4), "open": round(open_price, 4), "close": round(close_price, 4), "volume": int(volume)},
+            None,
+        )
     except Exception as e:
         logger.debug("Polygon afterhours error for %s: %s", ticker, e)
         return None, None

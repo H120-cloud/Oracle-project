@@ -191,6 +191,29 @@ class TestDeduplicateNewsItems:
         result = deduplicate_news_items(items)
         assert len(result) == 2
 
+    def test_materially_different_same_ticker_headlines_are_not_deduped(self):
+        base = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+        items = [
+            FinvizNewsItem(
+                headline="BGMS plans merger with Malaysia medical-waste innovator Future NRG",
+                source="StockTitan",
+                url="http://st.com/bgms-1",
+                timestamp=base,
+                tickers=["BGMS"],
+            ),
+            FinvizNewsItem(
+                headline="Bio Green Med enters Chapter 11 to cut debt and secure financing",
+                source="StockTitan",
+                url="http://st.com/bgms-2",
+                timestamp=base + timedelta(minutes=5),
+                tickers=["BGMS"],
+            ),
+        ]
+
+        result = deduplicate_news_items(items)
+
+        assert len(result) == 2
+
     def test_merges_richer_duplicate_metadata_for_classification(self):
         """Keep earliest publish time but do not discard richer source text."""
         base = datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc)

@@ -70,6 +70,40 @@ def get_pre_news_for_ticker(ticker: str) -> Optional[dict]:
     return anomalies.get(ticker.upper())
 
 
+def _enum_value(value, default: str = "") -> str:
+    if value is None:
+        return default
+    raw = getattr(value, "value", value)
+    return str(raw or default).strip().lower()
+
+
+def _suspicion_value(pn: dict) -> str:
+    return _enum_value(
+        pn.get("classification")
+        or pn.get("suspicion_level")
+        or pn.get("suspicion")
+        or "low"
+    )
+
+
+def _score_value(pn: dict) -> float:
+    for key in (
+        "pre_news_suspicion_score",
+        "suspicion_score",
+        "composite_suspicion_score",
+    ):
+        if key in pn:
+            try:
+                return float(pn.get(key) or 0.0)
+            except Exception:
+                return 0.0
+    return 0.0
+
+
+def _news_status_value(pn: dict) -> str:
+    return _enum_value(pn.get("news_status") or "unknown_news_status")
+
+
 def apply_pre_news_to_candidate(candidate) -> None:
     """
     Check if candidate has a pre-news anomaly and adjust scoring.
@@ -79,15 +113,29 @@ def apply_pre_news_to_candidate(candidate) -> None:
     if not pn:
         return
 
-    suspicion = pn.get("suspicion_level", "LOW")
-    news_status = pn.get("news_status", "UNKNOWN")
-    suspicion_score = pn.get("composite_suspicion_score", 0)
+    suspicion = _suspicion_value(pn)
+    news_status = _news_status_value(pn)
+    suspicion_score = _score_value(pn)
 
     # Attach pre-news metadata to candidate for ML features
     candidate.pre_news_suspicion_score = suspicion_score
     candidate.pre_news_has_anomaly = True
 
-    if suspicion in ("HIGH", "CRITICAL") and news_status in ("NO_NEWS", "STALE"):
+    no_news_statuses = {
+        "no_news",
+        "no_news_found",
+        "no_public_news_found_in_sources",
+        "stale",
+        "unknown_news_status",
+    }
+    confirmed_statuses = {
+        "matched",
+        "news_lag_confirmed",
+        "news_appeared_after_detection",
+        "public_catalyst_already_visible",
+    }
+
+    if suspicion in ("high", "extreme", "critical") and news_status in no_news_statuses:
         # High suspicion with no news: possible distribution or imminent move
         # Increase trap risk slightly (be more cautious)
         if candidate.trap:
@@ -98,7 +146,7 @@ def apply_pre_news_to_candidate(candidate) -> None:
                 candidate.ticker, old_trap, candidate.trap.trap_risk_score,
             )
 
-    elif news_status == "MATCHED" and suspicion_score > 50:
+    elif news_status in confirmed_statuses and suspicion_score > 50:
         # News confirmed the anomaly: boost catalyst strength
         if candidate.catalyst:
             old_strength = candidate.catalyst.strength_score

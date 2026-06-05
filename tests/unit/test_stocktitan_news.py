@@ -106,3 +106,30 @@ def test_stocktitan_extracts_bgms_plain_parentheses_and_preserves_description(mo
     assert sub_type in {CatalystSubType.ACQUISITION, CatalystSubType.MERGER}
     assert is_negative is False
     assert is_vague is False
+
+
+def test_stocktitan_resolves_company_name_when_no_explicit_ticker(monkeypatch):
+    rss = f"""
+    <rss><channel>
+    {_rss_item(
+        "Inotiv enters Chapter 11 to cut $326M debt, secure $65M financing",
+        "https://www.stocktitan.net/news/inotiv-enters-chapter-11.html",
+        "Plan backed by most lenders will trim $326M in debt while DIP and bridge funds keep operations running.",
+    )}
+    </channel></rss>
+    """
+
+    async def fake_fetch(url: str, max_retries: int = 3):
+        return _Response(rss)
+
+    monkeypatch.setattr(StockTitanScraper, "_fetch_with_retry", staticmethod(fake_fetch))
+    monkeypatch.setattr(
+        "src.core.stocktitan_news.resolve_company_ticker",
+        lambda name: "NOTV" if name == "Inotiv" else None,
+    )
+
+    items = asyncio.run(StockTitanScraper()._parse_rss())
+
+    assert len(items) == 1
+    assert items[0].tickers == ["NOTV"]
+    assert items[0].headline.startswith("Inotiv enters Chapter 11")

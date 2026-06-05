@@ -246,8 +246,8 @@ async def _pre_news_scan_loop():
                             alert_type="pre_news",
                             priority=3,
                         )
-                        detector.mark_alert_sent(anomaly.ticker)
                         if sent:
+                            detector.mark_alert_sent(anomaly.ticker)
                             logger.info("PreNews Telegram alert sent for %s (score=%s)", anomaly.ticker, anomaly.pre_news_suspicion_score)
                             validation_tracker.record_alert(anomaly.ticker)
                         else:
@@ -303,6 +303,20 @@ async def _pre_news_scan_loop():
             # If news has just been confirmed for a tracked anomaly, fire a
             # Telegram notification so the user knows the catalyst landed.
             newly_confirmed = await detector.update_news_status()
+            if newly_confirmed:
+                confirmed_handoff = [
+                    a for a in newly_confirmed
+                    if getattr(a, "pre_news_suspicion_score", 0.0) >= 70.0
+                ]
+                if confirmed_handoff:
+                    confirmed_result = orch.handoff_from_pre_news(confirmed_handoff)
+                    if confirmed_result["created"] or confirmed_result["updated"]:
+                        logger.info(
+                            "PreNews confirmed handoff: created=%d updated=%d skipped=%d",
+                            confirmed_result["created"],
+                            confirmed_result["updated"],
+                            confirmed_result["skipped"],
+                        )
             for anomaly in newly_confirmed:
                 try:
                     headline = anomaly.first_news_headline or "Catalyst confirmed"
@@ -322,8 +336,8 @@ async def _pre_news_scan_loop():
                         alert_type="pre_news_confirmed",
                         priority=4,
                     )
-                    detector.mark_news_confirmed_alert_sent(anomaly.ticker)
                     if sent:
+                        detector.mark_news_confirmed_alert_sent(anomaly.ticker)
                         logger.info(
                             "PreNews news-confirmation alert sent for %s", anomaly.ticker
                         )
@@ -875,6 +889,7 @@ async def _handle_streamed_news(items) -> None:
             if cutoff is not None and ts_utc < cutoff:
                 continue
             raw_text = _news_item_classification_text(item)
+            classified_at = datetime.now(timezone.utc)
             cat, sub, neg, vague = classify_headline(raw_text or item.headline)
             for ticker in item.tickers:
                 news_events.append(NewsEvent(
@@ -883,6 +898,10 @@ async def _handle_streamed_news(items) -> None:
                     source=NewsSource.ALPACA,
                     source_url=item.url,
                     published_at=ts_utc,
+                    timestamp_confidence="HIGH",
+                    fetched_at=now_utc,
+                    parsed_at=now_utc,
+                    classified_at=classified_at,
                     catalyst_category=cat,
                     catalyst_sub_type=sub,
                     is_negative=neg,
@@ -944,15 +963,18 @@ async def _sec_edgar_firehose_loop():
                     seen,
                     form="8-K",
                     count=feed_count,
+                    max_to_emit=max_per_poll,
                     client=client,
                     initial_emit_lookback_minutes=initial_lookback,
                 )
                 save_seen_accessions(seen)
                 if filings:
                     events = []
-                    for f in filings[:max_per_poll]:
+                    for f in filings:
+                        fetched_at = datetime.now(timezone.utc)
                         f = await enrich_filing_content(f, client)
                         headline = f.get("headline") or f"{f['company']} filed SEC Form 8-K"
+                        classified_at = datetime.now(timezone.utc)
                         cat, sub, neg, vague = classify_headline(headline)
                         events.append(NewsEvent(
                             ticker=f["ticker"],
@@ -960,6 +982,9 @@ async def _sec_edgar_firehose_loop():
                             source=NewsSource.SEC,
                             source_url=f["url"],
                             published_at=f["published_at"],
+                            fetched_at=fetched_at,
+                            parsed_at=fetched_at,
+                            classified_at=classified_at,
                             catalyst_category=cat,
                             catalyst_sub_type=sub,
                             is_negative=neg,
@@ -1030,57 +1055,52 @@ async def _news_momentum_scan_loop():
                     _wire_scraper = WireNewsScraper()
 
                 all_items: List[Any] = []
-                try:
-                    finviz_summary = await _finviz_scraper.fetch_all(force_refresh=True)
-                    finviz_items = (finviz_summary.news_items or []) + (finviz_summary.blog_items or [])
-                    _source_health.record_fetch("Finviz", len(finviz_items), now=datetime.now(timezone.utc))
-                    all_items.extend(finviz_items)
-                except Exception as exc:
-                    _source_health.record_parse_error("Finviz", now=datetime.now(timezone.utc))
-                    logger.debug("NewsMomentum: Finviz fetch error: %s", exc)
+                source_timeout = float(os.getenv("NEWS_SOURCE_FETCH_TIMEOUT_SECONDS", "12") or 12)
 
-                try:
-                    st_summary = await _stocktitan_scraper.fetch_all()
-                    st_items = (st_summary.news_items or []) + (st_summary.blog_items or [])
-                    _source_health.record_fetch("StockTitan", len(st_items), now=datetime.now(timezone.utc))
-                    all_items.extend(st_items)
-                except Exception as exc:
-                    _source_health.record_parse_error("StockTitan", now=datetime.now(timezone.utc))
-                    logger.debug("NewsMomentum: StockTitan fetch error: %s", exc)
+                async def _fetch_source(source_name: str, fetch_coro):
+                    try:
+                        summary = await asyncio.wait_for(fetch_coro(), timeout=source_timeout)
+                        fetched_at = datetime.now(timezone.utc)
+                        items = (getattr(summary, "news_items", None) or []) + (getattr(summary, "blog_items", None) or [])
+                        for item in items:
+                            try:
+                                setattr(item, "fetched_at", fetched_at)
+                                setattr(item, "parsed_at", fetched_at)
+                            except Exception:
+                                pass
+                        return source_name, summary, items, None
+                    except Exception as exc:
+                        return source_name, None, [], exc
 
-                try:
-                    prn_summary = await _prnewswire_scraper.fetch_all()
-                    prn_items = (prn_summary.news_items or []) + (prn_summary.blog_items or [])
-                    _source_health.record_fetch("PRNewswire", len(prn_items), now=datetime.now(timezone.utc))
-                    all_items.extend(prn_items)
-                except Exception as exc:
-                    _source_health.record_parse_error("PRNewswire", now=datetime.now(timezone.utc))
-                    logger.debug("NewsMomentum: PRNewswire fetch error: %s", exc)
+                source_results = await asyncio.gather(
+                    _fetch_source("Finviz", lambda: _finviz_scraper.fetch_all(force_refresh=True)),
+                    _fetch_source("StockTitan", _stocktitan_scraper.fetch_all),
+                    _fetch_source("PRNewswire", _prnewswire_scraper.fetch_all),
+                    _fetch_source("Sharecast", _sharecast_scraper.fetch_all),
+                    _fetch_source("WireNews", _wire_scraper.fetch_all),
+                )
 
-                try:
-                    sharecast_summary = await _sharecast_scraper.fetch_all()
-                    sharecast_items = (sharecast_summary.news_items or []) + (sharecast_summary.blog_items or [])
-                    _source_health.record_fetch("Sharecast", len(sharecast_items), now=datetime.now(timezone.utc))
-                    all_items.extend(sharecast_items)
-                except Exception as exc:
-                    _source_health.record_parse_error("Sharecast", now=datetime.now(timezone.utc))
-                    logger.debug("NewsMomentum: Sharecast fetch error: %s", exc)
+                for source_name, summary, items, exc in source_results:
+                    if exc is not None:
+                        _source_health.record_parse_error(source_name, now=datetime.now(timezone.utc))
+                        logger.warning("NewsMomentum: %s fetch error: %s", source_name, exc)
+                        continue
 
-                try:
-                    wire_summary = await _wire_scraper.fetch_all()
-                    wire_items = (wire_summary.news_items or []) + (wire_summary.blog_items or [])
-                    by_source: dict[str, int] = {}
-                    for item in wire_items:
-                        by_source[getattr(item, "source", "WireNews") or "WireNews"] = by_source.get(getattr(item, "source", "WireNews") or "WireNews", 0) + 1
-                    for source, count in by_source.items():
-                        _source_health.record_fetch(source, count, now=datetime.now(timezone.utc))
-                    for source, count in getattr(wire_summary, "failed_sources", {}).items():
+                    if source_name == "WireNews":
+                        by_source: dict[str, int] = {}
+                        for item in items:
+                            item_source = getattr(item, "source", "WireNews") or "WireNews"
+                            by_source[item_source] = by_source.get(item_source, 0) + 1
+                        if not by_source:
+                            _source_health.record_fetch("WireNews", 0, now=datetime.now(timezone.utc))
+                        for source, count in by_source.items():
+                            _source_health.record_fetch(source, count, now=datetime.now(timezone.utc))
+                    else:
+                        _source_health.record_fetch(source_name, len(items), now=datetime.now(timezone.utc))
+                    for failed_source, count in getattr(summary, "failed_sources", {}).items():
                         for _ in range(int(count or 0)):
-                            _source_health.record_parse_error(source, now=datetime.now(timezone.utc))
-                    all_items.extend(wire_items)
-                except Exception as exc:
-                    _source_health.record_parse_error("WireNews", now=datetime.now(timezone.utc))
-                    logger.debug("NewsMomentum: WireNews fetch error: %s", exc)
+                            _source_health.record_parse_error(failed_source, now=datetime.now(timezone.utc))
+                    all_items.extend(items)
 
                 # Deduplicate across sources before emitting events
                 all_items = deduplicate_news_items(all_items)
@@ -1128,6 +1148,7 @@ async def _news_momentum_scan_loop():
                         detected_at=_now_utc,
                     )
                     raw_text = _news_item_classification_text(item)
+                    classified_at = datetime.now(timezone.utc)
                     cat, sub, neg, vague = classify_headline(raw_text or item.headline)
                     source_name = getattr(item, "source", "")
                     if source_name == "StockTitan":
@@ -1153,6 +1174,10 @@ async def _news_momentum_scan_loop():
                             source=source_enum,
                             source_url=item.url,
                             published_at=item.timestamp,
+                            timestamp_confidence=getattr(item, "timestamp_confidence", "HIGH") or "HIGH",
+                            fetched_at=getattr(item, "fetched_at", None),
+                            parsed_at=getattr(item, "parsed_at", None),
+                            classified_at=classified_at,
                             catalyst_category=cat,
                             catalyst_sub_type=sub,
                             is_negative=neg,
@@ -1182,28 +1207,41 @@ async def _news_momentum_scan_loop():
                     if _finviz_news_scraper is None:
                         _finviz_news_scraper = FinvizNewsScraper()
 
-                    # Collect hot tickers from Finviz gainers + under-$2 screener
-                    hot_tickers: set[str] = set()
+                    # Collect hot tickers from Finviz gainers + under-$2 screener.
+                    # Preserve screener order so the highest-priority movers are
+                    # enriched first under the strict latency budget.
+                    hot_tickers: list[str] = []
+                    hot_seen: set[str] = set()
+
+                    def _add_hot_tickers(tickers: list[str]) -> None:
+                        for raw in tickers or []:
+                            ticker = str(raw or "").strip().upper()
+                            if ticker and ticker not in hot_seen:
+                                hot_seen.add(ticker)
+                                hot_tickers.append(ticker)
+
                     try:
                         # Discovery should not depend on yfinance validation.
                         # A transient quote/history failure can wrongly shrink
                         # the ticker-specific enrichment universe.
                         gainers = fetch_finviz_top_gainer_tickers(validate=False)
-                        hot_tickers.update(gainers)
-                    except Exception:
-                        pass
+                        _add_hot_tickers(gainers)
+                    except Exception as exc:
+                        _source_health.record_parse_error("FinvizTickerUniverse", now=datetime.now(timezone.utc))
+                        logger.warning("NewsMomentum: Finviz top-gainer ticker discovery failed: %s", exc)
                     try:
                         under2 = fetch_finviz_under2_high_volume_tickers(validate=False)
-                        hot_tickers.update(under2)
-                    except Exception:
-                        pass
+                        _add_hot_tickers(under2)
+                    except Exception as exc:
+                        _source_health.record_parse_error("FinvizTickerUniverse", now=datetime.now(timezone.utc))
+                        logger.warning("NewsMomentum: Finviz under-$2 ticker discovery failed: %s", exc)
 
                     # Already seen headlines from global feed so we don't dup
                     seen_headlines = {e.headline.lower().strip() for e in news_events}
                     enrichment_budget = float(os.environ.get("FINVIZ_TICKER_ENRICHMENT_BUDGET_SECONDS", "6") or 6)
                     enrichment_deadline = asyncio.get_running_loop().time() + max(0.5, enrichment_budget)
 
-                    for ticker in list(hot_tickers)[:30]:
+                    for ticker in hot_tickers[:30]:
                         try:
                             remaining = enrichment_deadline - asyncio.get_running_loop().time()
                             if remaining <= 0:
@@ -1213,6 +1251,13 @@ async def _news_momentum_scan_loop():
                                 _finviz_news_scraper.fetch_ticker_news(ticker, force_refresh=True),
                                 timeout=max(0.1, min(1.5, remaining)),
                             )
+                            ticker_fetched_at = datetime.now(timezone.utc)
+                            for fetched_item in ticker_items:
+                                try:
+                                    setattr(fetched_item, "fetched_at", ticker_fetched_at)
+                                    setattr(fetched_item, "parsed_at", ticker_fetched_at)
+                                except Exception:
+                                    pass
                             for item in ticker_items:
                                 if not item.tickers:
                                     continue
@@ -1222,11 +1267,14 @@ async def _news_momentum_scan_loop():
                                 seen_headlines.add(h_norm)
                                 if item.timestamp is None:
                                     _missing_ts_count += 1
+                                    _source_health.record_missing_timestamp("FinvizTickerNews")
                                     continue
                                 if _is_stale(item.timestamp):
                                     _stale_news_count += 1
+                                    _source_health.record_dropped_headline("FinvizTickerNews")
                                     continue
                                 raw_text = _news_item_classification_text(item)
+                                classified_at = datetime.now(timezone.utc)
                                 cat, sub, neg, vague = classify_headline(raw_text or item.headline)
                                 for t in item.tickers:
                                     ticker_news_events.append(NewsEvent(
@@ -1235,6 +1283,10 @@ async def _news_momentum_scan_loop():
                                         source=NewsSource.FINVIZ,
                                         source_url=item.url,
                                         published_at=item.timestamp,
+                                        timestamp_confidence=getattr(item, "timestamp_confidence", "HIGH") or "HIGH",
+                                        fetched_at=getattr(item, "fetched_at", None),
+                                        parsed_at=getattr(item, "parsed_at", None),
+                                        classified_at=classified_at,
                                         catalyst_category=cat,
                                         catalyst_sub_type=sub,
                                         is_negative=neg,
@@ -1242,9 +1294,11 @@ async def _news_momentum_scan_loop():
                                         raw_text=raw_text,
                                     ))
                         except asyncio.TimeoutError:
-                            logger.debug("NewsMomentum: ticker-specific news timeout for %s", ticker)
-                        except Exception:
-                            pass
+                            _source_health.record_parse_error("FinvizTickerNews", now=datetime.now(timezone.utc))
+                            logger.warning("NewsMomentum: ticker-specific news timeout for %s", ticker)
+                        except Exception as exc:
+                            _source_health.record_parse_error("FinvizTickerNews", now=datetime.now(timezone.utc))
+                            logger.warning("NewsMomentum: ticker-specific news failed for %s: %s", ticker, exc)
 
                     if hot_tickers:
                         logger.debug(

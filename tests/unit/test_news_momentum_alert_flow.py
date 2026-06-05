@@ -81,6 +81,17 @@ def test_fresh_published_and_detected_headline_gets_first_mover_boost():
     assert candidate.freshness_confidence == "HIGH"
 
 
+def test_low_confidence_timestamp_does_not_get_first_mover_boost():
+    orch = _minimal_gate_orchestrator()
+    candidate = _fresh_bullish_candidate("DATEONLY")
+    candidate.timestamp_confidence = "LOW"
+
+    orch._should_send_telegram_impl(candidate, adaptive={})
+
+    assert getattr(candidate, "_first_mover", False) is False
+    assert candidate.freshness_confidence == "LOW"
+
+
 def test_missing_published_at_does_not_get_first_mover_boost():
     orch = _minimal_gate_orchestrator()
     candidate = _fresh_bullish_candidate("NOPUB")
@@ -212,6 +223,10 @@ def test_send_telegram_success_survives_learning_record_failure(monkeypatch):
         "src.core.agentic.news_momentum_orchestrator.send_telegram_alert",
         lambda *args, **kwargs: _async_true(),
     )
+    monkeypatch.setattr(
+        "src.core.agentic.news_momentum_orchestrator.trace_candidate",
+        lambda *args, **kwargs: None,
+    )
 
     candidate = _candidate("SPRC")
 
@@ -220,7 +235,7 @@ def test_send_telegram_success_survives_learning_record_failure(monkeypatch):
     assert "SPRC" in orch._alert_cooldown
 
 
-def test_send_telegram_failure_sets_delivery_pending_cooldown(monkeypatch):
+def test_send_telegram_failure_does_not_set_normal_alert_cooldown(monkeypatch):
     orch = object.__new__(NewsMomentumOrchestrator)
     orch._alert_cooldown = {}
     orch._headline_alert_cooldown = {}
@@ -251,14 +266,120 @@ def test_send_telegram_failure_sets_delivery_pending_cooldown(monkeypatch):
         "src.core.agentic.news_momentum_orchestrator.send_telegram_alert",
         send_false,
     )
+    monkeypatch.setattr(
+        "src.core.agentic.news_momentum_orchestrator.trace_candidate",
+        lambda *args, **kwargs: None,
+    )
 
     candidate = _candidate("PEND")
 
     assert asyncio.run(orch._send_telegram_alert(candidate)) is False
     assert candidate.telegram_sent is False
-    assert "PEND" in orch._alert_cooldown
-    assert "PEND:hash" in orch._headline_alert_cooldown
-    assert saved == ["ticker", "headline", "candidates"]
+    assert "PEND" not in orch._alert_cooldown
+    assert "PEND:hash" not in orch._headline_alert_cooldown
+    assert saved == []
+
+
+def test_fast_path_watch_sends_fresh_high_impact_before_enrichment(monkeypatch):
+    orch = _minimal_gate_orchestrator()
+    candidate = _fresh_bullish_candidate("WATCH")
+    candidate.source = NewsSource.STOCKTITAN
+    candidate.catalyst_sub_type = CatalystSubType.FDA_APPROVAL
+    candidate.candidate_created_at = datetime.now(timezone.utc)
+
+    calls = []
+
+    async def send_true(*args, **kwargs):
+        calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(orch, "_stable_alert_id", lambda c: "watch-alert")
+    monkeypatch.setattr(
+        "src.core.agentic.news_momentum_orchestrator.send_telegram_alert",
+        send_true,
+    )
+    monkeypatch.setattr(
+        "src.core.agentic.news_momentum_orchestrator.trace_candidate",
+        lambda *args, **kwargs: None,
+    )
+
+    assert asyncio.run(orch._send_fast_path_watch(candidate)) is True
+    assert candidate.fast_path_watch_sent is True
+    assert calls[0]["alert_type"] == "news_momentum_fast_watch"
+    assert calls[0]["priority"] == 1
+
+
+def test_fast_path_watch_rejects_old_published_headline(monkeypatch):
+    orch = _minimal_gate_orchestrator()
+    candidate = _fresh_bullish_candidate("OLDFAST")
+    candidate.source = NewsSource.STOCKTITAN
+    candidate.published_at = datetime.now(timezone.utc) - timedelta(hours=2)
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("old headline must not send fast-path watch")
+
+    monkeypatch.setattr(
+        "src.core.agentic.news_momentum_orchestrator.send_telegram_alert",
+        fail_if_called,
+    )
+
+    assert asyncio.run(orch._send_fast_path_watch(candidate)) is False
+    assert candidate.fast_path_watch_sent is False
+
+
+def test_process_event_runs_fast_path_before_slow_enrichment(monkeypatch):
+    orch = object.__new__(NewsMomentumOrchestrator)
+    orch._candidate_by_ticker = {}
+    orch._candidates = []
+    orch._telegram_learning = type(
+        "TelegramLearning",
+        (),
+        {"get_catalyst_quality": lambda self, catalyst: {"insufficient": True}},
+    )()
+    orch._big_winner_ml = type(
+        "BigWinner",
+        (),
+        {"predict": lambda self, candidate: (_ for _ in ()).throw(RuntimeError("skip"))},
+    )()
+
+    order = []
+
+    async def fast_path(candidate):
+        order.append("fast_path")
+        return True
+
+    async def enrich(candidate):
+        order.append("enrich")
+
+    monkeypatch.setattr(orch, "_send_fast_path_watch", fast_path)
+    monkeypatch.setattr(orch, "_enrich_with_market_data", enrich)
+    monkeypatch.setattr(orch, "_compute_impact_score", lambda candidate: 80.0)
+    monkeypatch.setattr(orch, "_compute_reaction_score", lambda candidate: 20.0)
+    monkeypatch.setattr(orch, "_apply_sec_intelligence", lambda candidate: None)
+    monkeypatch.setattr(orch, "_generate_bull_bear", lambda candidate: BullBearCase())
+    monkeypatch.setattr(orch, "_log_rocket_shadow_prediction", lambda *args, **kwargs: None)
+
+    event = NewsEvent(
+        ticker="ORDER",
+        headline="ORDER announces FDA approval",
+        source=NewsSource.STOCKTITAN,
+        published_at=datetime.now(timezone.utc),
+        catalyst_category=CatalystCategory.BIOTECH,
+        catalyst_sub_type=CatalystSubType.FDA_APPROVAL,
+    )
+
+    candidate = asyncio.run(
+        orch._process_event(
+            event,
+            SessionType.REGULAR,
+            historical_stats=None,
+            adaptive={},
+        )
+    )
+
+    assert candidate is not None
+    assert order[:2] == ["fast_path", "enrich"]
+    assert candidate.scored_at is not None
 
 
 def test_process_event_existing_ticker_refreshes_without_name_error(monkeypatch):

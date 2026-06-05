@@ -164,6 +164,9 @@ FINANCIAL_KEYWORDS = {
     CatalystSubType.DEBT_RESTRUCTURING: [
         r"debt restructuring", r"debt refinance", r"extends maturity", r"credit agreement",
         r"waives covenant",
+        r"cut[s]? \$?\d+(\.\d+)?[mb] debt", r"reduce[s]? \$?\d+(\.\d+)?[mb] debt",
+        r"trim[s]? \$?\d+(\.\d+)?[mb] debt", r"debt reduction",
+        r"restructuring plan.*(approved|backed|support)",
     ],
     CatalystSubType.INSIDER_BUYING: [
         r"insider buying", r"insider purchase", r"ceo buys", r"director purchase",
@@ -185,6 +188,9 @@ FINANCIAL_KEYWORDS = {
         r"credit facility", r"revolving credit", r"term loan",
         r"commitment increase", r"funding round", r"series [a-e] funding",
         r"venture capital", r"private placement", r"strategic investment",
+        r"\bdip financing\b", r"debtor[- ]in[- ]possession financing",
+        r"bridge financing", r"bridge funds", r"secure[s]? \$?\d+(\.\d+)?[mb] financing",
+        r"lender[s]? .*back", r"lender[s]? .*support",
     ],
     CatalystSubType.DEBT_DOWNGRADE: [
         r"credit downgrade", r"credit rating downgrade", r"downgraded.*credit",
@@ -699,6 +705,22 @@ def classify_headline(headline: str) -> tuple[CatalystCategory, CatalystSubType,
     # ── Negative sentinel: override NLP when strong negative words present ──
     # These patterns indicate clear negative events that the NLP classifier
     # (trained mostly on positive catalysts) often misclassifies.
+    restructuring_language = bool(re.search(r"chapter 11|bankruptcy|restructuring", text))
+    debt_relief_language = bool(re.search(
+        r"cut[s]? .*debt|reduce[s]? .*debt|trim[s]? .*debt|debt reduction|"
+        r"debt restructuring|restructuring plan",
+        text,
+    ))
+    rescue_financing_language = bool(re.search(
+        r"\bdip financing\b|debtor[- ]in[- ]possession financing|"
+        r"bridge (financing|funds)|secure[s]? .*financing|lender[s]? .*back|"
+        r"lender[s]? .*support|keep[s]? operations running|exit[s]? chapter 11",
+        text,
+    ))
+    if restructuring_language and debt_relief_language and rescue_financing_language:
+        logger.debug("Restructuring rescue matched for '%s...'", headline[:40])
+        return CatalystCategory.FINANCIAL, CatalystSubType.DEBT_RESTRUCTURING, False, _is_vague(text)
+
     negative_sentinels = [
         (r"complete response letter|receives crl|fda crl", CatalystSubType.OTHER),
         (r"patient death|fatalit(y|ies)|mortality|patient died", CatalystSubType.OTHER),

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import hashlib
+import html
 import logging
 import os
 import re
@@ -79,6 +80,7 @@ from src.core.agentic.sec_intelligence_orchestrator import (
 from src.core.agentic.sec_filing_models import (
     SECIntelligenceCandidate as _SECCandidate,
 )
+from src.core.agentic.news_alert_latency_trace import trace_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +116,51 @@ _HIGH_CONVICTION_CATALYSTS = frozenset({
     CatalystSubType.GUIDANCE_RAISE, CatalystSubType.PROFITABILITY_INFLECTION,
     CatalystSubType.EARNINGS_BEAT, CatalystSubType.DIVIDEND_INCREASE,
     CatalystSubType.STOCK_SPLIT_FORWARD, CatalystSubType.CREDIT_UPGRADE,
-    CatalystSubType.FINANCING_POSITIVE, CatalystSubType.EV_BATTERY,
+    CatalystSubType.FINANCING_POSITIVE, CatalystSubType.DEBT_RESTRUCTURING,
+    CatalystSubType.EV_BATTERY,
     CatalystSubType.RENEWABLE_ENERGY,
+})
+
+_FAST_PATH_VERIFIED_SOURCES = frozenset({
+    NewsSource.STOCKTITAN,
+    NewsSource.ALPACA,
+    NewsSource.SEC,
+    NewsSource.GLOBE_NEWSWIRE,
+    NewsSource.BUSINESS_WIRE,
+    NewsSource.PR_NEWSWIRE,
+    NewsSource.ACCESSWIRE,
+    NewsSource.NEWSFILE,
+    NewsSource.COMPANY_PRESS,
+    NewsSource.FINVIZ,
+})
+
+_FAST_PATH_HIGH_IMPACT_CATALYSTS = frozenset({
+    CatalystSubType.FDA_APPROVAL,
+    CatalystSubType.FDA_CLEARANCE,
+    CatalystSubType.NDA_APPROVAL,
+    CatalystSubType.PDUFA,
+    CatalystSubType.TOPLINE_DATA,
+    CatalystSubType.PHASE_2,
+    CatalystSubType.PHASE_3,
+    CatalystSubType.MERGER,
+    CatalystSubType.ACQUISITION,
+    CatalystSubType.BUYOUT,
+    CatalystSubType.GOVERNMENT_CONTRACT,
+    CatalystSubType.HYPERSCALER_CONTRACT,
+    CatalystSubType.SUPPLY_AGREEMENT,
+    CatalystSubType.OEM_PARTNERSHIP,
+    CatalystSubType.INFRASTRUCTURE_AGREEMENT,
+    CatalystSubType.MAJOR_PARTNERSHIP,
+    CatalystSubType.AI_PARTNERSHIP,
+    CatalystSubType.NVIDIA_PARTNERSHIP,
+    CatalystSubType.OPENAI_PARTNERSHIP,
+    CatalystSubType.EARNINGS_BEAT,
+    CatalystSubType.GUIDANCE_RAISE,
+    CatalystSubType.PROFITABILITY_INFLECTION,
+    CatalystSubType.LISTING_COMPLIANCE,
+    CatalystSubType.WARRANT_OVERHANG_REMOVAL,
+    CatalystSubType.FINANCING_POSITIVE,
+    CatalystSubType.DEBT_RESTRUCTURING,
 })
 
 
@@ -1236,13 +1281,20 @@ class NewsMomentumOrchestrator:
             source_url=event.source_url,
             raw_text=event.raw_text or event.headline,
             published_at=event.published_at,
+            timestamp_confidence=event.timestamp_confidence,
             detected_at=event.detected_at,
+            fetched_at=event.fetched_at,
+            parsed_at=event.parsed_at,
+            classified_at=event.classified_at,
+            candidate_created_at=now,
             session=session,
             catalyst_category=event.catalyst_category,
             catalyst_sub_type=event.catalyst_sub_type,
             is_negative=event.is_negative,
             is_vague=event.is_vague,
         )
+
+        await self._send_fast_path_watch(c)
 
         # Fetch market data (async)
         await self._enrich_with_market_data(c)
@@ -1313,6 +1365,7 @@ class NewsMomentumOrchestrator:
 
         # Bull/bear cases
         c.bull_bear = self._generate_bull_bear(c)
+        c.scored_at = datetime.now(timezone.utc)
 
         self._log_rocket_shadow_prediction(c, source_pipeline="news_momentum")
 
@@ -1322,6 +1375,95 @@ class NewsMomentumOrchestrator:
 
         return c
 
+    def _is_fast_path_watch_eligible(self, c: NewsMomentumCandidate) -> bool:
+        if c.fast_path_watch_sent or c.telegram_sent:
+            return False
+        if c.source not in _FAST_PATH_VERIFIED_SOURCES:
+            return False
+        if c.is_negative or c.is_vague:
+            return False
+        if c.catalyst_sub_type not in _FAST_PATH_HIGH_IMPACT_CATALYSTS:
+            return False
+        if (getattr(c, "timestamp_confidence", "HIGH") or "HIGH").upper() != "HIGH":
+            return False
+
+        now = datetime.now(timezone.utc)
+        published_at = _aware_utc(c.published_at)
+        detected_at = _aware_utc(c.detected_at)
+        if not published_at or not detected_at:
+            return False
+        published_age = (now - published_at).total_seconds()
+        detected_age = (now - detected_at).total_seconds()
+        c.published_age_seconds = round(published_age, 3)
+        c.detected_age_seconds = round(detected_age, 3)
+        if published_age < 0 or detected_age < 0:
+            return False
+        max_age = max(60, int(self.config.first_mover_max_age_seconds or 300))
+        return published_age <= max_age and detected_age <= max_age
+
+    def _format_fast_path_watch_message(self, c: NewsMomentumCandidate) -> str:
+        source = c.source.value if hasattr(c.source, "value") else str(c.source)
+        published = _aware_utc(c.published_at)
+        age = ""
+        if published:
+            age_seconds = max(0, int((datetime.now(timezone.utc) - published).total_seconds()))
+            age = f"\nFreshness: {age_seconds}s from publish"
+        return (
+            "<b>ORACLE FAST WATCH</b>\n"
+            f"<b>{html.escape(c.ticker)}</b> - high-impact catalyst detected\n"
+            f"Type: <b>{html.escape(c.catalyst_sub_type.value)}</b>\n"
+            f"Source: {html.escape(source)}{age}\n\n"
+            f"{html.escape(c.headline)}\n\n"
+            "Scores/price enrichment are still running."
+        )
+
+    async def _send_fast_path_watch(self, c: NewsMomentumCandidate) -> bool:
+        if not self._is_fast_path_watch_eligible(c):
+            return False
+        c.telegram_alert_id = c.telegram_alert_id or self._stable_alert_id(c)
+        fast_alert_id = f"{c.telegram_alert_id}:fast_watch"
+        c.telegram_enqueue_at = datetime.now(timezone.utc)
+        try:
+            sent = await send_telegram_alert(
+                self._format_fast_path_watch_message(c),
+                parse_mode="HTML",
+                alert_id=fast_alert_id,
+                ticker=c.ticker,
+                alert_type="news_momentum_fast_watch",
+                priority=1,
+            )
+            if sent:
+                c.fast_path_watch_sent = True
+                c.fast_path_watch_sent_at = datetime.now(timezone.utc)
+                c.telegram_sent_at = c.fast_path_watch_sent_at
+                logger.info("NewsMomentum: fast WATCH sent for %s before enrichment", c.ticker)
+            else:
+                logger.warning("NewsMomentum: fast WATCH queued/failed for %s before enrichment", c.ticker)
+            trace_candidate(
+                c,
+                alert_sent=sent,
+                blocked_reason=None if sent else "telegram_fast_watch_send_failed",
+                alert_type="news_momentum_fast_watch",
+                fast_path=True,
+            )
+            # Reset normal alert delivery fields so the later scored alert can
+            # still pass the existing Telegram gate if it qualifies.
+            c.telegram_enqueue_at = None
+            c.telegram_sent_at = None
+            return sent
+        except Exception as exc:
+            logger.warning("NewsMomentum: fast WATCH failed for %s: %s", c.ticker, exc)
+            trace_candidate(
+                c,
+                alert_sent=False,
+                blocked_reason=f"telegram_fast_watch_exception:{exc}",
+                alert_type="news_momentum_fast_watch",
+                fast_path=True,
+            )
+            c.telegram_enqueue_at = None
+            c.telegram_sent_at = None
+            return False
+
     @staticmethod
     def _merge_event_metadata_into_candidate(c: NewsMomentumCandidate, event: NewsEvent) -> None:
         """Preserve richer source text when a same-ticker candidate is refreshed."""
@@ -1330,6 +1472,14 @@ class NewsMomentumOrchestrator:
             c.raw_text = event_raw
         if (not c.source_url) and event.source_url:
             c.source_url = event.source_url
+        if (getattr(c, "timestamp_confidence", "HIGH") or "HIGH").upper() != "HIGH":
+            c.timestamp_confidence = event.timestamp_confidence
+        if not c.fetched_at and event.fetched_at:
+            c.fetched_at = event.fetched_at
+        if not c.parsed_at and event.parsed_at:
+            c.parsed_at = event.parsed_at
+        if not c.classified_at and event.classified_at:
+            c.classified_at = event.classified_at
         if c.is_vague and not event.is_vague:
             c.is_vague = False
 
@@ -1554,6 +1704,7 @@ class NewsMomentumOrchestrator:
             c.estimated_move.extreme_target = round(c.current_price * (1 + move["extreme_pct"] / 100), 4)
         c.bull_bear = self._generate_bull_bear(c)
         c.oracle_action = determine_oracle_action(c, cp, md)
+        c.scored_at = datetime.now(timezone.utc)
         self._log_rocket_shadow_prediction(c, source_pipeline="news_momentum_refresh")
 
     def _compute_impact_score(self, c: NewsMomentumCandidate) -> float:
@@ -1671,6 +1822,7 @@ class NewsMomentumOrchestrator:
         """Wrapper: log blocked gate decisions to the shadow logger, then return."""
         c._block_reason = None  # type: ignore[attr-defined]
         allowed = self._should_send_telegram_impl(c, adaptive)
+        c.gate_decision_at = datetime.now(timezone.utc)
         # Skip allowed candidates here. A passed gate is not the same thing as
         # a delivered Telegram alert; sent alerts are recorded by the learning
         # tracker, and send failures are logged in _send_telegram_alert.
@@ -1680,6 +1832,16 @@ class NewsMomentumOrchestrator:
                 self._shadow_logger.log_candidate(c, was_blocked=(not allowed), block_reason=reason)
             except Exception as exc:
                 logger.debug("Shadow log failed for %s: %s", c.ticker, exc)
+            try:
+                trace_candidate(
+                    c,
+                    alert_sent=False,
+                    blocked_reason=getattr(c, "_block_reason", None),
+                    alert_type="news_momentum_gate",
+                    fast_path=False,
+                )
+            except Exception as exc:
+                logger.debug("Latency trace failed for blocked %s: %s", c.ticker, exc)
         return allowed
 
     def _should_send_telegram_impl(self, c: NewsMomentumCandidate, adaptive: dict) -> bool:
@@ -1866,7 +2028,12 @@ class NewsMomentumOrchestrator:
             detected_age_secs = (now - detected_at).total_seconds() if detected_at else None
             c.published_age_seconds = published_age_secs
             c.detected_age_seconds = detected_age_secs
-            c.freshness_confidence = "HIGH" if published_age_secs is not None and detected_age_secs is not None else "LOW"
+            timestamp_confidence = (getattr(c, "timestamp_confidence", "HIGH") or "HIGH").upper()
+            c.freshness_confidence = "HIGH" if (
+                timestamp_confidence == "HIGH"
+                and published_age_secs is not None
+                and detected_age_secs is not None
+            ) else "LOW"
             # Speed tier fires when the news is fresh (within the configured
             # window) by both publication time and detection time. This avoids
             # treating old headlines as breaking merely because a parser saw
@@ -1878,6 +2045,7 @@ class NewsMomentumOrchestrator:
                     and detected_age_secs is not None
                     and 0 <= published_age_secs <= max_age
                     and 0 <= detected_age_secs <= max_age
+                    and c.freshness_confidence == "HIGH"
                     and _headline_is_fresh_bullish(c.headline, c.is_negative,
                                                    c.trap_risk, c.dilution_risk)):
                 first_mover = True
@@ -2439,6 +2607,7 @@ class NewsMomentumOrchestrator:
         text = self._format_telegram_message(c)
         try:
             c.telegram_alert_id = c.telegram_alert_id or self._stable_alert_id(c)
+            c.telegram_enqueue_at = datetime.now(timezone.utc)
             sent = await send_telegram_alert(
                 text,
                 parse_mode="HTML",
@@ -2450,6 +2619,7 @@ class NewsMomentumOrchestrator:
             if sent:
                 c.telegram_sent = True
                 now_ts = datetime.now(timezone.utc)
+                c.telegram_sent_at = now_ts
                 self._alert_cooldown[c.ticker] = now_ts
                 # Record headline cooldown so the same news can't re-alert
                 headline_key = f"{c.ticker}:{self._headline_hash(c.headline)}"
@@ -2516,20 +2686,6 @@ class NewsMomentumOrchestrator:
                     )
                 logger.info("NewsMomentum: Telegram alert sent for %s", c.ticker)
             else:
-                now_ts = datetime.now(timezone.utc)
-                self._alert_cooldown[c.ticker] = now_ts
-                headline_key = f"{c.ticker}:{self._headline_hash(c.headline)}"
-                self._headline_alert_cooldown[headline_key] = now_ts
-                try:
-                    self._save_cooldowns()
-                    self._save_headline_cooldowns()
-                    self._save_candidates()
-                except Exception as persist_exc:
-                    logger.debug(
-                        "NewsMomentum: delivery-pending cooldown persistence failed for %s: %s",
-                        c.ticker,
-                        persist_exc,
-                    )
                 try:
                     self._shadow_logger.log_candidate(
                         c,
@@ -2544,9 +2700,29 @@ class NewsMomentumOrchestrator:
                     "check TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID and Telegram API warnings",
                     c.ticker,
                 )
+            try:
+                trace_candidate(
+                    c,
+                    alert_sent=sent,
+                    blocked_reason=None if sent else "telegram_send_failed",
+                    alert_type="news_momentum",
+                    fast_path=False,
+                )
+            except Exception as trace_exc:
+                logger.debug("Latency trace failed for Telegram %s: %s", c.ticker, trace_exc)
             return sent
         except Exception as exc:
             logger.warning("NewsMomentum: Telegram send failed for %s: %s", c.ticker, exc)
+            try:
+                trace_candidate(
+                    c,
+                    alert_sent=False,
+                    blocked_reason=f"telegram_send_exception:{exc}",
+                    alert_type="news_momentum",
+                    fast_path=False,
+                )
+            except Exception as trace_exc:
+                logger.debug("Latency trace failed for Telegram exception %s: %s", c.ticker, trace_exc)
             return False
 
     def _format_telegram_message(self, c: NewsMomentumCandidate) -> str:

@@ -178,13 +178,15 @@ async def fetch_current_filings(
     seen_accessions: Set[str],
     form: str = "8-K",
     count: int = 100,
+    max_to_emit: Optional[int] = None,
     client: Optional[httpx.AsyncClient] = None,
     initial_emit_lookback_minutes: int = 30,
 ) -> List[Dict[str, Any]]:
     """Poll EDGAR getcurrent for `form`, return NEW filings resolved to tickers.
 
-    `seen_accessions` is mutated in place with every accession observed, so
-    repeated calls only ever return filings not previously emitted.
+    `seen_accessions` is mutated only for filings intentionally skipped on
+    startup or returned for downstream processing. Overflow beyond
+    `max_to_emit` remains unseen so bursts cannot silently drop fresh filings.
     """
     own_client = client is None
     if own_client:
@@ -220,8 +222,6 @@ async def fetch_current_filings(
                 if initial_emit_lookback_minutes <= 0 or published_at < cutoff:
                     seen_accessions.add(accession)
                     continue
-            seen_accessions.add(accession)
-
             cik_m = re.search(r"\((\d{10})\)", title)
             cik = cik_m.group(1) if cik_m else None
             ticker = cik_map.get(cik) if cik else None
@@ -241,6 +241,9 @@ async def fetch_current_filings(
                 "url": link_m.group(1) if link_m else "",
                 "summary": _strip_tags(summary_m.group(1) if summary_m else ""),
             })
+            seen_accessions.add(accession)
+            if max_to_emit is not None and len(out) >= max_to_emit:
+                break
     except Exception as exc:
         logger.debug("EDGAR firehose error for %s: %s", form, exc)
     finally:

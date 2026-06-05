@@ -255,7 +255,11 @@ class NewsEvent(BaseModel):
     source_url: Optional[str] = None
     raw_text: str = ""
     published_at: datetime
+    timestamp_confidence: str = "HIGH"
     detected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    fetched_at: Optional[datetime] = None
+    parsed_at: Optional[datetime] = None
+    classified_at: Optional[datetime] = None
     catalyst_category: CatalystCategory = CatalystCategory.UNKNOWN
     catalyst_sub_type: CatalystSubType = CatalystSubType.OTHER
     is_negative: bool = False
@@ -264,7 +268,7 @@ class NewsEvent(BaseModel):
     velocity: NewsVelocity = Field(default_factory=NewsVelocity)
     duplicate_of_id: Optional[str] = None  # If this is a duplicate of an earlier event
 
-    @field_validator("published_at", "detected_at")
+    @field_validator("published_at", "detected_at", "fetched_at", "parsed_at", "classified_at")
     @classmethod
     def _normalize_datetimes(cls, value):
         return _aware_utc_datetime(value)
@@ -615,9 +619,18 @@ class NewsMomentumCandidate(BaseModel):
     velocity_score: float = 0.0  # 0-20 bonus from fast multi-source coverage
     sources_seen_count: int = 1
     first_detected_at: Optional[datetime] = None
+    fetched_at: Optional[datetime] = None
+    parsed_at: Optional[datetime] = None
+    candidate_created_at: Optional[datetime] = None
+    classified_at: Optional[datetime] = None
+    scored_at: Optional[datetime] = None
+    gate_decision_at: Optional[datetime] = None
+    telegram_enqueue_at: Optional[datetime] = None
+    telegram_sent_at: Optional[datetime] = None
     published_age_seconds: Optional[float] = None
     detected_age_seconds: Optional[float] = None
     freshness_confidence: str = "UNKNOWN"
+    timestamp_confidence: str = "HIGH"
 
     # News-to-price lag detection
     first_volume_reaction_at: Optional[datetime] = None  # When price/volume actually moved
@@ -632,6 +645,8 @@ class NewsMomentumCandidate(BaseModel):
     # State
     is_active: bool = True
     telegram_sent: bool = False
+    fast_path_watch_sent: bool = False
+    fast_path_watch_sent_at: Optional[datetime] = None
     telegram_alert_id: Optional[str] = None
     resolved: bool = False
     resolution_price: Optional[float] = None
@@ -642,6 +657,15 @@ class NewsMomentumCandidate(BaseModel):
         "published_at",
         "detected_at",
         "first_detected_at",
+        "fetched_at",
+        "parsed_at",
+        "candidate_created_at",
+        "classified_at",
+        "scored_at",
+        "gate_decision_at",
+        "telegram_enqueue_at",
+        "telegram_sent_at",
+        "fast_path_watch_sent_at",
         "first_volume_reaction_at",
         "aggressive_refresh_until",
         "resolution_time",

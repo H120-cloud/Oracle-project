@@ -62,6 +62,9 @@ class FinvizNewsItem:
     source: str
     url: str
     timestamp: Optional[datetime] = None
+    timestamp_confidence: str = "HIGH"
+    fetched_at: Optional[datetime] = None
+    parsed_at: Optional[datetime] = None
     tickers: List[str] = field(default_factory=list)
     category: str = "news"
     sentiment: str = "neutral"
@@ -73,6 +76,8 @@ class FinvizNewsItem:
             "source": self.source,
             "url": self.url,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "fetched_at": self.fetched_at.isoformat() if self.fetched_at else None,
+            "parsed_at": self.parsed_at.isoformat() if self.parsed_at else None,
             "tickers": self.tickers,
             "category": self.category,
             "sentiment": self.sentiment,
@@ -151,11 +156,13 @@ class FinvizNewsScraper:
             summary.news_items = await self._fetch_news()
             logger.info("Fetched %d news items from Finviz", len(summary.news_items))
         except Exception as e:
+            summary.failed_sources["FinvizNews"] = summary.failed_sources.get("FinvizNews", 0) + 1
             logger.error("News fetch failed: %s", e)
         try:
             summary.blog_items = await self._fetch_blogs()
             logger.info("Fetched %d blog items from Finviz", len(summary.blog_items))
         except Exception as e:
+            summary.failed_sources["FinvizBlogs"] = summary.failed_sources.get("FinvizBlogs", 0) + 1
             logger.error("Blog fetch failed: %s", e)
         summary.last_updated = datetime.now(timezone.utc)
 

@@ -19,6 +19,7 @@ from src.core.finviz_news import (
     _run_coro_blocking,
     _sort_by_ts_desc,
 )
+from src.core.company_name_resolver import resolve_company_ticker
 from src.core.news_ticker_extractor import extract_tickers
 
 # StockTitan is a primary real-time catalyst source consumed by the ~20s news
@@ -55,6 +56,22 @@ def _clean_description(description: str) -> str:
     return text
 
 
+_COMPANY_PREFIX_RE = re.compile(
+    r"^(?P<name>[A-Z][A-Za-z0-9&.,' -]{1,80}?)\s+"
+    r"(?=enters|enter|secures|secure|announces|announced|plans|agrees|"
+    r"agreed|receives|received|wins|won|files|filed|launches|launch|"
+    r"reports|reported|to acquire|acquires|merges|merger|signs|signed)\b",
+    re.IGNORECASE,
+)
+
+
+def _resolve_title_company_ticker(title: str) -> str | None:
+    match = _COMPANY_PREFIX_RE.search(title or "")
+    if not match:
+        return None
+    return resolve_company_ticker(match.group("name"))
+
+
 def _quick_sentiment(headline: str) -> str:
     h = headline.lower()
     bull = sum(1 for kw in _BULLISH if kw in h)
@@ -80,16 +97,19 @@ class StockTitanScraper:
             return self._cache
 
         items: List[FinvizNewsItem] = []
+        failed_sources: dict[str, int] = {}
         try:
             items = await self._parse_rss()
             logger.info("StockTitan: fetched %d items from RSS feed", len(items))
         except Exception as e:
+            failed_sources["StockTitan"] = failed_sources.get("StockTitan", 0) + 1
             logger.error("StockTitan RSS fetch failed: %s", e)
 
         summary = FinvizNewsSummary(
             news_items=_sort_by_ts_desc(items),
             blog_items=[],
             last_updated=datetime.now(timezone.utc),
+            failed_sources=failed_sources,
         )
         self._cache = summary
         self._cache_time = now
@@ -150,6 +170,10 @@ class StockTitanScraper:
                 continue
 
             tickers = extract_tickers(title, description, url=link, include_plain_parens=True)
+            if not tickers:
+                resolved = _resolve_title_company_ticker(title)
+                if resolved:
+                    tickers = [resolved]
             if not tickers:
                 continue
 

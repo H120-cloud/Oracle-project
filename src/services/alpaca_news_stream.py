@@ -42,7 +42,7 @@ class StreamedNewsItem:
     headline: str
     tickers: List[str]
     url: Optional[str]
-    timestamp: datetime
+    timestamp: Optional[datetime]
     source: str = "Alpaca"
     summary: str = ""
 
@@ -169,9 +169,7 @@ class AlpacaNewsStream:
         if not headline or not symbols:
             return []
         ts = getattr(news, "created_at", None) or getattr(news, "updated_at", None)
-        if ts is None:
-            ts = datetime.now(timezone.utc)
-        elif ts.tzinfo is None:
+        if ts is not None and ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
         return [
             StreamedNewsItem(

@@ -1,5 +1,6 @@
 """Stock Titan News Scraper — Real-time catalyst news via RSS feed from stocktitan.net"""
 import asyncio
+import html
 import logging
 import os
 import re
@@ -44,6 +45,14 @@ _BEARISH = [
     "lawsuit", "decline", "loss", "investigation", "recall", "warning",
     "downgrade", "default", "bankruptcy", "layoff", "cut", "delay",
 ]
+
+
+def _clean_description(description: str) -> str:
+    """Convert RSS descriptions into plain text for ticker/classifier use."""
+    text = html.unescape(description or "")
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def _quick_sentiment(headline: str) -> str:
@@ -134,13 +143,13 @@ class StockTitanScraper:
         for item_el in channel.findall("item"):
             title = (item_el.findtext("title") or "").strip()
             link = (item_el.findtext("link") or "").strip()
-            description = (item_el.findtext("description") or "").strip()
+            description = _clean_description((item_el.findtext("description") or "").strip())
             pub_date_str = item_el.findtext("pubDate")
 
             if not title or not link:
                 continue
 
-            tickers = extract_tickers(title, description, url=link)
+            tickers = extract_tickers(title, description, url=link, include_plain_parens=True)
             if not tickers:
                 continue
 
@@ -161,7 +170,7 @@ class StockTitanScraper:
                 except Exception:
                     ts = None
 
-            sentiment = _quick_sentiment(headline)
+            sentiment = _quick_sentiment(f"{headline} {description}")
 
             items.append(FinvizNewsItem(
                 headline=headline,
@@ -171,6 +180,7 @@ class StockTitanScraper:
                 tickers=tickers,
                 category="news",
                 sentiment=sentiment,
+                description=description,
             ))
 
         return items

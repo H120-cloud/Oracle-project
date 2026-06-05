@@ -265,6 +265,7 @@ def test_process_event_existing_ticker_refreshes_without_name_error(monkeypatch)
     orch = object.__new__(NewsMomentumOrchestrator)
     existing = _candidate("SPRC")
     existing.detected_at = datetime.now(timezone.utc)
+    existing.raw_text = "SciSparc receives conditional approval"
     orch._candidate_by_ticker = {"SPRC": existing}
 
     refreshed = []
@@ -282,6 +283,7 @@ def test_process_event_existing_ticker_refreshes_without_name_error(monkeypatch)
         detected_at=datetime.now(timezone.utc) - timedelta(minutes=5),
         catalyst_category=CatalystCategory.BIOTECH,
         catalyst_sub_type=CatalystSubType.FDA_APPROVAL,
+        raw_text="SciSparc receives conditional approval with detailed source summary text",
     )
 
     result = asyncio.run(
@@ -295,6 +297,7 @@ def test_process_event_existing_ticker_refreshes_without_name_error(monkeypatch)
 
     assert result is existing
     assert refreshed == ["SPRC"]
+    assert result.raw_text.endswith("detailed source summary text")
 
 
 def test_process_event_promotes_existing_candidate_when_catalyst_becomes_high_conviction(monkeypatch):
@@ -394,6 +397,7 @@ def test_process_event_promotes_existing_candidate_when_catalyst_becomes_high_co
         catalyst_sub_type=CatalystSubType.DRUG_LAUNCH,
         is_negative=False,
         is_vague=False,
+        raw_text="PainReform announces commercial launch of its lead drug with full RSS summary text",
     )
 
     result = asyncio.run(
@@ -408,8 +412,51 @@ def test_process_event_promotes_existing_candidate_when_catalyst_becomes_high_co
     assert refreshed == []
     assert result is not existing
     assert result.catalyst_sub_type == CatalystSubType.DRUG_LAUNCH
+    assert result.raw_text.endswith("full RSS summary text")
     assert result.news_impact_score == 61.0
     assert orch._candidate_by_ticker["PRFX"] is result
+
+
+def test_duplicate_event_can_refresh_when_it_upgrades_existing_candidate():
+    orch = object.__new__(NewsMomentumOrchestrator)
+    existing = _candidate("BGMS")
+    existing.catalyst_category = CatalystCategory.UNKNOWN
+    existing.catalyst_sub_type = CatalystSubType.OTHER
+    existing.raw_text = "Bio Green Med provides update"
+    orch._candidate_by_ticker = {"BGMS": existing}
+
+    event = NewsEvent(
+        ticker="BGMS",
+        headline="Bio Green Med to acquire Future NRG",
+        source=NewsSource.STOCKTITAN,
+        published_at=datetime.now(timezone.utc),
+        catalyst_category=CatalystCategory.CORPORATE,
+        catalyst_sub_type=CatalystSubType.ACQUISITION,
+        raw_text="Bio Green Med to acquire Future NRG via share-for-share exchange",
+    )
+    event.duplicate_of_id = "prior"
+
+    assert orch._duplicate_event_should_refresh_existing_candidate(event) is True
+
+
+def test_duplicate_event_stays_suppressed_when_it_adds_nothing():
+    orch = object.__new__(NewsMomentumOrchestrator)
+    existing = _candidate("BGMS")
+    existing.raw_text = "Bio Green Med to acquire Future NRG via share-for-share exchange"
+    orch._candidate_by_ticker = {"BGMS": existing}
+
+    event = NewsEvent(
+        ticker="BGMS",
+        headline=existing.headline,
+        source=NewsSource.STOCKTITAN,
+        published_at=datetime.now(timezone.utc),
+        catalyst_category=existing.catalyst_category,
+        catalyst_sub_type=existing.catalyst_sub_type,
+        raw_text="Bio Green Med to acquire Future NRG",
+    )
+    event.duplicate_of_id = "prior"
+
+    assert orch._duplicate_event_should_refresh_existing_candidate(event) is False
 
 
 def test_gate_allows_prfx_style_high_conviction_before_three_percent_move(monkeypatch):

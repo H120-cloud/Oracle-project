@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from src.core.agentic.news_momentum_orchestrator import NewsMomentumOrchestrator
 from src.core.agentic.news_momentum_catalyst_classifier import classify_headline
 from src.core.agentic.news_momentum_models import NewsEvent, NewsSource, SessionType
+from src.core.agentic.source_health_registry import source_health_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,23 @@ async def get_stats():
     if not _orchestrator:
         raise HTTPException(status_code=503, detail="News momentum system not initialized")
     return _orchestrator.get_stats()
+
+
+@router.get("/source-health")
+async def get_source_health():
+    now = datetime.now(timezone.utc)
+    sources = source_health_tracker.to_dict(now=now)
+    problem_sources = [
+        key
+        for key, value in sources.items()
+        if value.get("status") in {"warning", "stale", "error"}
+    ]
+    return {
+        "updated_at": now.isoformat(),
+        "total_sources": len(sources),
+        "problem_sources": problem_sources,
+        "sources": sources,
+    }
 
 
 @router.get("/catalyst-stats")

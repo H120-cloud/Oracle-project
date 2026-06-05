@@ -269,6 +269,9 @@ export const newsMomentumScanNow = () =>
 export const newsMomentumStats = () =>
   fetchJSON(`${BASE}/news-momentum/stats`);
 
+export const newsMomentumSourceHealth = () =>
+  fetchJSON(`${BASE}/news-momentum/source-health`);
+
 export const newsMomentumCatalystStats = () =>
   fetchJSON(`${BASE}/news-momentum/catalyst-stats`);
 

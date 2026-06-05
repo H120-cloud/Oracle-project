@@ -253,13 +253,13 @@ class NewsEvent(BaseModel):
     headline: str
     source: NewsSource
     source_url: Optional[str] = None
+    raw_text: str = ""
     published_at: datetime
     detected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     catalyst_category: CatalystCategory = CatalystCategory.UNKNOWN
     catalyst_sub_type: CatalystSubType = CatalystSubType.OTHER
     is_negative: bool = False
     is_vague: bool = False
-    raw_text: str = ""
     # Cross-source velocity
     velocity: NewsVelocity = Field(default_factory=NewsVelocity)
     duplicate_of_id: Optional[str] = None  # If this is a duplicate of an earlier event
@@ -563,6 +563,7 @@ class NewsMomentumCandidate(BaseModel):
     headline: str
     source: NewsSource
     source_url: Optional[str] = None
+    raw_text: str = ""
     published_at: datetime
     detected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     session: SessionType

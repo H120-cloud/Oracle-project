@@ -247,12 +247,15 @@ CORPORATE_KEYWORDS = {
         r"merger", r"merges with", r"merger agreement", r"combination with",
         # "Strategic combination creates" — common M&A press-release phrasing
         r"strategic combination", r"business combination",
+        r"share[- ]for[- ]share exchange", r"all[- ]stock share exchange",
+        r"share exchange",
     ],
     CatalystSubType.ACQUISITION: [
         r"acquisition", r"acquires", r"to acquire", r"acquired by", r"buyout",
         r"takeover", r"strategic acquisition",
         # Target-side / deal-structure phrasings that were previously missed
         r"to be acquired", r"agrees? to be acquired", r"acquired in",
+        r"wholly owned (unit|subsidiary)",
         r"all[- ]cash (transaction|deal|merger|acquisition|offer)",
         r"definitive (merger |acquisition )?agreement",
         r"agrees? to acquire", r"enters? into.*(merger|acquisition) agreement",
@@ -323,6 +326,10 @@ CORPORATE_KEYWORDS = {
         r"partnership with major (auto|automotive|car) manufacturer",
         r"strategic partnership with major (german|japanese|korean|american|european) automaker",
         r"fortune 500 (partnership|company partnership|deal)",
+        r"(lands?|landing|inks?|signs?|secures?) (a )?(deal|agreement|partnership|collaboration) with (a )?(global|major|leading|tier[- ]1|fortune 500)",
+        r"(global|major|leading|tier[- ]1|fortune 500).*(electronics|technology|semiconductor|display|consumer electronics).*(deal|agreement|partnership|collaboration|customer)",
+        r"paid proof[- ]of[- ]concept (agreement|deal|project|program)",
+        r"proof[- ]of[- ]concept (agreement|deal|project|program) with (a )?(global|major|leading|tier[- ]1)",
     ],
     CatalystSubType.SUPPLY_AGREEMENT: [
         # Energy / utility / industrial supply deals

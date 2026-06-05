@@ -29,12 +29,28 @@ from src.core.news_ticker_extractor import extract_tickers as _extract_news_tick
 
 logger = logging.getLogger(__name__)
 
-SHARECAST_PRESS_NOTE_URL = "https://www.sharecast.com/amp/press_note/market_reports/"
+# The /market_reports/ AMP sub-path returns a broken server-side error stub
+# ("MANDATORY WS EMPTY"). The parent /amp/press_note index serves the real
+# press-note listing (~97KB, ~60 article links) and is what we scrape.
+SHARECAST_PRESS_NOTE_URL = "https://www.sharecast.com/amp/press_note"
 SHARECAST_CACHE_TTL = float(os.environ.get("SHARECAST_CACHE_TTL_SECONDS", "60") or 60)
 
 HEADERS = {
     **_BASE_HEADERS,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    # Full browser header set — Sharecast 403s the default UA. These get us a
+    # 200 (past the block), though their AMP feed is frequently server-side
+    # broken and the main site is a JS SPA, so content may still be empty.
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.sharecast.com/",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 _DATE_RE = re.compile(r"^(?P<day>\d{1,2})\s+(?P<month>[A-Za-z]{3,9})$", re.IGNORECASE)
@@ -105,14 +121,27 @@ class SharecastScraper:
         if (not force_refresh) and self._cache and (now - self._cache_time) < SHARECAST_CACHE_TTL:
             return self._cache
 
-        items: List[FinvizNewsItem] = []
-        try:
-            html = await self._fetch(SHARECAST_PRESS_NOTE_URL)
-            items = parse_sharecast_press_note_html(html, base_url=SHARECAST_PRESS_NOTE_URL)
-            logger.info("Sharecast: fetched %d tickered press-note items", len(items))
-        except Exception as exc:
-            logger.error("Sharecast fetch failed: %s", exc)
+        html = await self._fetch(SHARECAST_PRESS_NOTE_URL)
+        # Sharecast's AMP endpoint regularly returns a server-side error stub
+        # ("[Section Exception Catched] MANDATORY WS EMPTY") with HTTP 200, and
+        # the main site is a JS SPA with no server-rendered articles. Detect
+        # these so we surface a real failure to the health tracker instead of
+        # silently caching an empty "success" (which made the dashboard show
+        # Sharecast green while it was actually down).
+        if "section exception" in html.lower() or "mandatory ws empty" in html.lower():
+            raise RuntimeError("Sharecast upstream error stub (MANDATORY WS EMPTY)")
 
+        items = parse_sharecast_press_note_html(html, base_url=SHARECAST_PRESS_NOTE_URL)
+        if not items:
+            # Reaching here with zero items means the page loaded but had no
+            # parseable tickered press-notes (JS-rendered / layout change).
+            # Raise so this counts as an error, not a healthy empty fetch.
+            raise RuntimeError(
+                "Sharecast returned no parseable items (%d bytes) — likely "
+                "JS-rendered or layout changed" % len(html)
+            )
+
+        logger.info("Sharecast: fetched %d tickered press-note items", len(items))
         summary = FinvizNewsSummary(
             news_items=_sort_by_ts_desc(items),
             blog_items=[],
@@ -141,6 +170,7 @@ def parse_sharecast_press_note_html(
     soup = BeautifulSoup(html, "html.parser")
     items: List[FinvizNewsItem] = []
     current_date: Optional[datetime] = None
+    _seen_headlines: set[str] = set()  # dedup repeated anchors on the page
 
     for node in soup.find_all(["a", "h6", "h5", "p", "span", "time"]):
         text = " ".join(node.get_text(" ", strip=True).split())
@@ -154,10 +184,29 @@ def parse_sharecast_press_note_html(
         href = node.get("href") if node.name == "a" else None
         if href and "/press_note/" not in href:
             continue
+        # Only treat real article anchors as headlines (skip nav/index links
+        # like "/press_note/all" and short non-headline text).
+        if node.name == "a":
+            if not href or "/press_note/market_reports/" not in href:
+                continue
+            if len(text) < 15:
+                continue
 
+        # 1) STRICT: explicit symbol in the headline ($TICK / (TICK)).
         tickers = extract_sharecast_tickers(text)
+        # 2) FALLBACK: Sharecast usually prints a company NAME, not a symbol.
+        #    Resolve name -> US ticker. Names that don't map to a US listing
+        #    (UK-only funds/trusts) return nothing and are correctly dropped.
+        if not tickers:
+            resolved = _resolve_name_ticker(text)
+            if resolved:
+                tickers = [resolved]
         if not tickers:
             continue
+
+        if text in _seen_headlines:
+            continue
+        _seen_headlines.add(text)
 
         items.append(
             FinvizNewsItem(
@@ -172,3 +221,21 @@ def parse_sharecast_press_note_html(
         )
 
     return items
+
+
+def _resolve_name_ticker(headline: str) -> Optional[str]:
+    """Map a Sharecast company-name headline to a US ticker. The leading text
+    before a ' - ' separator is the company name (e.g. 'Capital Gearing Trust
+    P.l.c. - Net Asset Value(s)')."""
+    try:
+        from src.core.company_name_resolver import resolve_company_ticker
+    except Exception:
+        return None
+    cleaned = re.sub(
+        r"^(?:NYSE|NASDAQ|AMEX)\s+Content\s+Update:\s*",
+        "",
+        headline or "",
+        flags=re.IGNORECASE,
+    ).strip()
+    name = cleaned.split(" - ")[0].strip()
+    return resolve_company_ticker(name) or resolve_company_ticker(headline)

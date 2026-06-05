@@ -798,6 +798,16 @@ def _get_news_scan_lock() -> asyncio.Lock:
     return _news_scan_lock
 
 
+def _news_item_classification_text(item) -> str:
+    """Use source summary text for classification without changing alert copy."""
+    parts = [
+        getattr(item, "headline", "") or "",
+        getattr(item, "description", "") or "",
+        getattr(item, "summary", "") or "",
+    ]
+    return " ".join(part.strip() for part in parts if part and part.strip())
+
+
 async def _handle_streamed_news(items) -> None:
     """Event-driven handler for real-time Alpaca news pushes.
 
@@ -829,7 +839,8 @@ async def _handle_streamed_news(items) -> None:
             ts_utc = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
             if cutoff is not None and ts_utc < cutoff:
                 continue
-            cat, sub, neg, vague = classify_headline(item.headline)
+            raw_text = _news_item_classification_text(item)
+            cat, sub, neg, vague = classify_headline(raw_text or item.headline)
             for ticker in item.tickers:
                 news_events.append(NewsEvent(
                     ticker=ticker,
@@ -841,6 +852,7 @@ async def _handle_streamed_news(items) -> None:
                     catalyst_sub_type=sub,
                     is_negative=neg,
                     is_vague=vague,
+                    raw_text=raw_text,
                 ))
 
         if not news_events:
@@ -952,8 +964,8 @@ async def _news_momentum_scan_loop():
     _iter_count = 0
     _missing_ts_count = 0
     _stale_news_count = 0
-    from src.core.agentic.source_health import SourceHealthTracker
-    _source_health = SourceHealthTracker()
+    _untickered_news_count = 0
+    from src.core.agentic.source_health_registry import source_health_tracker as _source_health
 
     while True:
         _iter_count += 1
@@ -1057,7 +1069,10 @@ async def _news_momentum_scan_loop():
 
                 for item in all_items:
                     if not item.tickers:
+                        _untickered_news_count += 1
+                        _source_health.record_untickered_headline(getattr(item, "source", "unknown") or "unknown")
                         continue
+                    _source_health.record_tickered_headline(getattr(item, "source", "unknown") or "unknown")
                     # Drop items with no parseable timestamp rather than
                     # fabricating "now" — silently stamping unknown items as
                     # fresh corrupts the calibrator, expected-return model,
@@ -1077,7 +1092,8 @@ async def _news_momentum_scan_loop():
                         item.timestamp,
                         detected_at=_now_utc,
                     )
-                    cat, sub, neg, vague = classify_headline(item.headline)
+                    raw_text = _news_item_classification_text(item)
+                    cat, sub, neg, vague = classify_headline(raw_text or item.headline)
                     source_name = getattr(item, "source", "")
                     if source_name == "StockTitan":
                         source_enum = NewsSource.STOCKTITAN
@@ -1106,6 +1122,7 @@ async def _news_momentum_scan_loop():
                             catalyst_sub_type=sub,
                             is_negative=neg,
                             is_vague=vague,
+                            raw_text=raw_text,
                         ))
 
                 if news_events:
@@ -1133,12 +1150,15 @@ async def _news_momentum_scan_loop():
                     # Collect hot tickers from Finviz gainers + under-$2 screener
                     hot_tickers: set[str] = set()
                     try:
-                        gainers = fetch_finviz_top_gainer_tickers(validate=True)
+                        # Discovery should not depend on yfinance validation.
+                        # A transient quote/history failure can wrongly shrink
+                        # the ticker-specific enrichment universe.
+                        gainers = fetch_finviz_top_gainer_tickers(validate=False)
                         hot_tickers.update(gainers)
                     except Exception:
                         pass
                     try:
-                        under2 = fetch_finviz_under2_high_volume_tickers(validate=True)
+                        under2 = fetch_finviz_under2_high_volume_tickers(validate=False)
                         hot_tickers.update(under2)
                     except Exception:
                         pass
@@ -1171,7 +1191,8 @@ async def _news_momentum_scan_loop():
                                 if _is_stale(item.timestamp):
                                     _stale_news_count += 1
                                     continue
-                                cat, sub, neg, vague = classify_headline(item.headline)
+                                raw_text = _news_item_classification_text(item)
+                                cat, sub, neg, vague = classify_headline(raw_text or item.headline)
                                 for t in item.tickers:
                                     ticker_news_events.append(NewsEvent(
                                         ticker=t,
@@ -1183,6 +1204,7 @@ async def _news_momentum_scan_loop():
                                         catalyst_sub_type=sub,
                                         is_negative=neg,
                                         is_vague=vague,
+                                        raw_text=raw_text,
                                     ))
                         except asyncio.TimeoutError:
                             logger.debug("NewsMomentum: ticker-specific news timeout for %s", ticker)
@@ -1224,8 +1246,8 @@ async def _news_momentum_scan_loop():
         # is a strong signal of a Finviz/StockTitan layout change.
         if _iter_count % max(1, int(300 / max(1, interval))) == 0:
             logger.info(
-                "NewsMomentum heartbeat: iter=%d interval=%ds missing_ts_dropped=%d stale_news_dropped=%d",
-                _iter_count, interval, _missing_ts_count, _stale_news_count,
+                "NewsMomentum heartbeat: iter=%d interval=%ds untickered_dropped=%d missing_ts_dropped=%d stale_news_dropped=%d",
+                _iter_count, interval, _untickered_news_count, _missing_ts_count, _stale_news_count,
             )
             for warning in _source_health.evaluate(now=datetime.now(timezone.utc)):
                 logger.warning("News source health: %s", warning)

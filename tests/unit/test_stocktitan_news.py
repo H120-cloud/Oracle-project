@@ -5,6 +5,8 @@ import asyncio
 import pytest
 
 from src.core.stocktitan_news import StockTitanScraper
+from src.core.agentic.news_momentum_catalyst_classifier import classify_headline
+from src.core.agentic.news_momentum_models import CatalystCategory, CatalystSubType
 
 
 pytestmark = [pytest.mark.unit]
@@ -73,3 +75,34 @@ def test_stocktitan_extracts_ticker_from_sec_filings_url_when_title_has_no_suffi
 
     assert len(items) == 1
     assert items[0].tickers == ["STI"]
+
+
+def test_stocktitan_extracts_bgms_plain_parentheses_and_preserves_description(monkeypatch):
+    rss = f"""
+    <rss><channel>
+    {_rss_item(
+        "Bio Green Med (BGMS) to acquire Future NRG in share exchange; control shifts",
+        "https://www.stocktitan.net/news/latest-market-report.html",
+        "Bio Green Med agreed on June 4, 2026 to acquire Future NRG via a share-for-share exchange; sellers would own ~99% pro forma.",
+    )}
+    </channel></rss>
+    """
+
+    async def fake_fetch(url: str, max_retries: int = 3):
+        return _Response(rss)
+
+    monkeypatch.setattr(StockTitanScraper, "_fetch_with_retry", staticmethod(fake_fetch))
+
+    items = asyncio.run(StockTitanScraper()._parse_rss())
+
+    assert len(items) == 1
+    assert items[0].tickers == ["BGMS"]
+    assert "share-for-share exchange" in items[0].description
+
+    category, sub_type, is_negative, is_vague = classify_headline(
+        f"{items[0].headline} {items[0].description}"
+    )
+    assert category == CatalystCategory.CORPORATE
+    assert sub_type in {CatalystSubType.ACQUISITION, CatalystSubType.MERGER}
+    assert is_negative is False
+    assert is_vague is False

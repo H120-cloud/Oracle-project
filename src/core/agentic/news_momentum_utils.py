@@ -67,6 +67,24 @@ def deduplicate_news_items(
         # so the dedup still applies for headlines we couldn't tag.
         return (it.tickers[0].upper() if it.tickers else "")
 
+    def _merge_metadata(preferred: FinvizNewsItem, other: FinvizNewsItem) -> FinvizNewsItem:
+        """Keep preferred timing/source while preserving richer duplicate payload."""
+        for ticker in getattr(other, "tickers", []) or []:
+            ticker_u = str(ticker).upper()
+            if ticker_u and ticker_u not in preferred.tickers:
+                preferred.tickers.append(ticker_u)
+
+        preferred_desc = getattr(preferred, "description", "") or ""
+        other_desc = getattr(other, "description", "") or ""
+        if len(other_desc) > len(preferred_desc):
+            preferred.description = other_desc
+
+        if (not preferred.url) and getattr(other, "url", ""):
+            preferred.url = other.url
+        if getattr(preferred, "sentiment", "neutral") == "neutral" and getattr(other, "sentiment", "neutral") != "neutral":
+            preferred.sentiment = other.sentiment
+        return preferred
+
     # List of (key, item, first_index) for kept items
     kept: list[tuple[tuple[str, str], FinvizNewsItem, int]] = []
 
@@ -83,23 +101,29 @@ def deduplicate_news_items(
             # Without a real timestamp on either side, we can't enforce the
             # window — treat as duplicate and keep whichever has a real ts.
             if item_ts is None and existing_ts is None:
+                kept[i] = (key, _merge_metadata(existing, item), first_idx)
                 merged = True
                 break
             if existing_ts is None:
-                kept[i] = (key, item, first_idx)
+                kept[i] = (key, _merge_metadata(item, existing), first_idx)
                 merged = True
                 break
             if item_ts is None:
+                kept[i] = (key, _merge_metadata(existing, item), first_idx)
                 merged = True
                 break
 
             if abs((item_ts - existing_ts).total_seconds()) <= window.total_seconds():
                 if item_ts < existing_ts:
-                    kept[i] = (key, item, first_idx)
+                    kept[i] = (key, _merge_metadata(item, existing), first_idx)
                 elif item_ts == existing_ts:
                     # Prefer historically-faster source (StockTitan) on ties
                     if item.source == "StockTitan" and existing.source != "StockTitan":
-                        kept[i] = (key, item, first_idx)
+                        kept[i] = (key, _merge_metadata(item, existing), first_idx)
+                    else:
+                        kept[i] = (key, _merge_metadata(existing, item), first_idx)
+                else:
+                    kept[i] = (key, _merge_metadata(existing, item), first_idx)
                 merged = True
                 break
 

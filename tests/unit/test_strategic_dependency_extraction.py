@@ -95,6 +95,36 @@ def test_news_momentum_eod_review_uses_strategic_finviz_snapshot(monkeypatch):
     assert result["missed_discovery"][0]["ticker"] == "SPRC"
 
 
+def test_pre_news_universe_includes_broad_strategic_finviz_sources(monkeypatch):
+    from src.core.agentic import pre_news_detector
+    from src.core.agentic.pre_news_detector import PreNewsDetector
+
+    monkeypatch.setattr(pre_news_detector, "fetch_finviz_top_gainer_tickers", lambda **_: ["TOP1"])
+    monkeypatch.setattr(pre_news_detector, "fetch_finviz_under2_high_volume_tickers", lambda **_: ["PENNY1"])
+    monkeypatch.setattr(pre_news_detector, "fetch_finviz_most_active_tickers", lambda **_: ["RMSG"])
+    monkeypatch.setattr(pre_news_detector, "fetch_finviz_unusual_volume_tickers", lambda **_: ["BGMS"])
+    monkeypatch.setattr(pre_news_detector, "fetch_finviz_most_volatile_tickers", lambda **_: ["SMTK"])
+    monkeypatch.setattr(pre_news_detector, "fetch_finviz_under5_active_tickers", lambda **_: ["UNDER5"])
+    monkeypatch.setattr(pre_news_detector, "fetch_finviz_penny_mover_tickers", lambda **_: ["PENNY2"])
+
+    class NoopStockTwits:
+        def get_trending_tickers(self, limit=20):
+            return []
+
+    class EmptyScraper:
+        def fetch_all_sync(self):
+            return SimpleNamespace(news_items=[])
+
+    monkeypatch.setattr(pre_news_detector, "StockTwitsScraper", NoopStockTwits)
+    monkeypatch.setattr(pre_news_detector, "PRNewswireScraper", EmptyScraper)
+    monkeypatch.setattr(pre_news_detector, "SharecastScraper", EmptyScraper)
+    monkeypatch.setattr(pre_news_detector, "WireNewsScraper", EmptyScraper)
+
+    universe = PreNewsDetector()._get_universe()
+
+    assert {"RMSG", "BGMS", "SMTK"}.issubset(set(universe))
+
+
 def test_pre_news_manual_universe_no_longer_imports_legacy_watchlist_repository():
     pre_news_text = Path("src/core/agentic/pre_news_detector.py").read_text(encoding="utf-8")
 
@@ -121,3 +151,12 @@ def test_strategic_news_quote_endpoint_replaces_analysis_live_quote():
     assert "/analysis/live-quote" not in strategic_api
     assert '@router.get("/quote/{ticker}")' in news_route
     assert "api_strategic" in news_page
+
+
+def test_news_momentum_ticker_enrichment_uses_unvalidated_finviz_discovery():
+    main_text = Path("src/main.py").read_text(encoding="utf-8")
+
+    assert "fetch_finviz_top_gainer_tickers(validate=False)" in main_text
+    assert "fetch_finviz_under2_high_volume_tickers(validate=False)" in main_text
+    assert "fetch_finviz_top_gainer_tickers(validate=True)" not in main_text
+    assert "fetch_finviz_under2_high_volume_tickers(validate=True)" not in main_text

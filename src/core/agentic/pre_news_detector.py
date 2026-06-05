@@ -74,6 +74,11 @@ from src.core.wire_news import WireNewsScraper
 from src.core.agentic.finviz_universe import (
     fetch_finviz_top_gainer_tickers,
     fetch_finviz_under2_high_volume_tickers,
+    fetch_finviz_most_active_tickers,
+    fetch_finviz_most_volatile_tickers,
+    fetch_finviz_penny_mover_tickers,
+    fetch_finviz_under5_active_tickers,
+    fetch_finviz_unusual_volume_tickers,
 )
 from src.core.stocktitan_news import StockTitanScraper
 from src.core.stocktwits_scraper import StockTwitsScraper
@@ -306,6 +311,16 @@ def _classify_price_behaviour(bars: list, quote: dict) -> PriceBehaviourDetail:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  NEWS CHECK
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _news_item_analysis_text(item) -> str:
+    """Return headline plus source detail for risk/catalyst analysis."""
+    parts = [
+        getattr(item, "headline", "") or "",
+        getattr(item, "description", "") or "",
+        getattr(item, "summary", "") or "",
+    ]
+    return " ".join(part.strip() for part in parts if part and part.strip())
 
 
 def _check_news_status(
@@ -1440,7 +1455,7 @@ class PreNewsDetector:
                     for item in (news_items or []):
                         try:
                             if ticker.upper() in [t.upper() for t in getattr(item, "tickers", [])]:
-                                ticker_headlines.append(item.headline or "")
+                                ticker_headlines.append(_news_item_analysis_text(item))
                         except Exception:
                             continue
                     offering_risk, _, _ = compute_offering_risk_v3(
@@ -1563,7 +1578,27 @@ class PreNewsDetector:
         except Exception as e:
             logger.debug("PreNewsDetector: Finviz under-$2 failed: %s", e)
 
-        # 3. StockTwits trending (social-driven discovery)
+        # 3. Broader Finviz momentum screens.
+        #
+        # Top-gainers alone can miss no-news runners that appear first as
+        # "most active", "unusual volume", or "most volatile" before they
+        # reach the headline/top-gainer path. Keep caps modest; bounded
+        # concurrency and the global scan budget still control runtime.
+        extra_finviz_sources = [
+            ("finviz_active", fetch_finviz_most_active_tickers, int(os.environ.get("PRE_NEWS_FINVIZ_ACTIVE_LIMIT", "30") or 30)),
+            ("finviz_unusual_volume", fetch_finviz_unusual_volume_tickers, int(os.environ.get("PRE_NEWS_FINVIZ_UNUSUAL_VOLUME_LIMIT", "30") or 30)),
+            ("finviz_most_volatile", fetch_finviz_most_volatile_tickers, int(os.environ.get("PRE_NEWS_FINVIZ_MOST_VOLATILE_LIMIT", "30") or 30)),
+            ("finviz_under5_active", fetch_finviz_under5_active_tickers, int(os.environ.get("PRE_NEWS_FINVIZ_UNDER5_ACTIVE_LIMIT", "30") or 30)),
+            ("finviz_penny_movers", fetch_finviz_penny_mover_tickers, int(os.environ.get("PRE_NEWS_FINVIZ_PENNY_LIMIT", "30") or 30)),
+        ]
+        for source_name, fetcher, limit in extra_finviz_sources:
+            try:
+                for ticker in fetcher(max_results=limit, validate=False):
+                    _tag(ticker, source_name)
+            except Exception as e:
+                logger.debug("PreNewsDetector: %s failed: %s", source_name, e)
+
+        # 4. StockTwits trending (social-driven discovery)
         try:
             st = StockTwitsScraper()
             for t in st.get_trending_tickers(limit=20):
@@ -1571,7 +1606,7 @@ class PreNewsDetector:
         except Exception as e:
             logger.debug("PreNewsDetector: StockTwits trending failed: %s", e)
 
-        # 4. PRNewswire public-company releases (fresh catalysts even when Finviz is blocked)
+        # 5. PRNewswire public-company releases (fresh catalysts even when Finviz is blocked)
         try:
             if self._prnewswire_scraper is None:
                 self._prnewswire_scraper = PRNewswireScraper()
@@ -1591,7 +1626,7 @@ class PreNewsDetector:
         except Exception as e:
             logger.debug("PreNewsDetector: PRNewswire universe fetch failed: %s", e)
 
-        # 5. Sharecast press notes (supplemental; only high-confidence tickered items)
+        # 6. Sharecast press notes (supplemental; only high-confidence tickered items)
         try:
             if self._sharecast_scraper is None:
                 self._sharecast_scraper = SharecastScraper()
@@ -1611,7 +1646,7 @@ class PreNewsDetector:
         except Exception as e:
             logger.debug("PreNewsDetector: Sharecast universe fetch failed: %s", e)
 
-        # 6. Supplemental wires (GlobeNewswire, BusinessWire, Accesswire, Newsfile)
+        # 7. Supplemental wires (GlobeNewswire, BusinessWire, Accesswire, Newsfile)
         try:
             if self._wire_scraper is None:
                 self._wire_scraper = WireNewsScraper()
@@ -1632,7 +1667,7 @@ class PreNewsDetector:
         except Exception as e:
             logger.debug("PreNewsDetector: WireNews universe fetch failed: %s", e)
 
-        # 7. Manual universe integration (tickers the user is already tracking)
+        # 8. Manual universe integration (tickers the user is already tracking)
         try:
             from src.core.agentic.manual_universe import get_manual_universe_tickers
             for ticker in get_manual_universe_tickers():
@@ -1801,7 +1836,7 @@ class PreNewsDetector:
         for item in (news_items or []):
             try:
                 if ticker.upper() in [t.upper() for t in getattr(item, "tickers", [])]:
-                    ticker_headlines.append(item.headline or "")
+                    ticker_headlines.append(_news_item_analysis_text(item))
             except Exception:
                 continue
         offering_risk, offering_hits, dilution_severe = compute_offering_risk_v3(

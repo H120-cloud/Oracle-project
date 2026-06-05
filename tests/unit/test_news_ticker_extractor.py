@@ -38,3 +38,9 @@ def test_plain_parentheses_only_when_requested():
 
     assert extract_tickers(text) == []
     assert extract_tickers(text, include_plain_parens=True) == ["OLOX"]
+
+
+def test_plain_parentheses_skip_exchange_names():
+    text = "Company announces update (NASDAQ) and expansion (NYSE)"
+
+    assert extract_tickers(text, include_plain_parens=True) == []

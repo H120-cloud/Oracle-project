@@ -69,8 +69,8 @@ def _parse_timestamp(hour: str, minute: str, *, now: Optional[datetime] = None) 
     return ts_et.astimezone(timezone.utc)
 
 
-def extract_tickers(text: str) -> list[str]:
-    return _extract_news_tickers(text or "")
+def extract_tickers(text: str, *, url: str = "") -> list[str]:
+    return _extract_news_tickers(text or "", url=url, include_plain_parens=True)
 
 
 class PRNewswireScraper:
@@ -135,13 +135,13 @@ def parse_prnewswire_public_company_html(
         if not match:
             continue
 
+        timestamp = _parse_timestamp(match.group("hour"), match.group("minute"), now=now)
+        url = urljoin(base_url, href)
         body = match.group("body").strip()
-        tickers = extract_tickers(body)
+        tickers = extract_tickers(body, url=url)
         if not tickers:
             continue
 
-        timestamp = _parse_timestamp(match.group("hour"), match.group("minute"), now=now)
-        url = urljoin(base_url, href)
         items.append(
             FinvizNewsItem(
                 headline=body,

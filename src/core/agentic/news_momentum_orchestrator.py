@@ -742,17 +742,20 @@ class NewsMomentumOrchestrator:
 
         # Prune cooldown dicts and event registry
         cooldown_cutoff = now - timedelta(hours=max_age_hours)
+        alert_cooldown = getattr(self, "_alert_cooldown", {}) or {}
+        headline_alert_cooldown = getattr(self, "_headline_alert_cooldown", {}) or {}
+        event_registry = getattr(self, "_event_registry", {}) or {}
         self._alert_cooldown = {
-            t: ts for t, ts in self._alert_cooldown.items()
+            t: ts for t, ts in alert_cooldown.items()
             if (_aware_utc(ts) or now) >= cooldown_cutoff
         }
         self._headline_alert_cooldown = {
-            k: ts for k, ts in self._headline_alert_cooldown.items()
+            k: ts for k, ts in headline_alert_cooldown.items()
             if (_aware_utc(ts) or now) >= cooldown_cutoff
         }
         dup_window = timedelta(hours=2)
         self._event_registry = {
-            k: v for k, v in self._event_registry.items()
+            k: v for k, v in event_registry.items()
             if (_aware_utc(v.detected_at) or now) >= (now - dup_window)
         }
 
@@ -1055,7 +1058,9 @@ class NewsMomentumOrchestrator:
             # Duplicate check: suppress reworded headlines for same ticker within 2 hours
             event = self._check_duplicate(event)
             if event.duplicate_of_id:
-                continue  # Skip pure duplicates
+                if not self._duplicate_event_should_refresh_existing_candidate(event):
+                    continue  # Skip pure duplicates
+                event.duplicate_of_id = None
 
             candidate = await self._process_event(event, session, hist_dict, adaptive)
             if candidate:
@@ -1219,6 +1224,7 @@ class NewsMomentumOrchestrator:
             else:
                 # Same news — refresh market data and recompute scores
                 # This catches delayed moves (e.g. news at 5:31 AM, move at 9:05 AM)
+                self._merge_event_metadata_into_candidate(existing, event)
                 await self._refresh_candidate(existing, historical_stats)
                 return existing
 
@@ -1228,6 +1234,7 @@ class NewsMomentumOrchestrator:
             headline=event.headline,
             source=event.source,
             source_url=event.source_url,
+            raw_text=event.raw_text or event.headline,
             published_at=event.published_at,
             detected_at=event.detected_at,
             session=session,
@@ -1315,6 +1322,17 @@ class NewsMomentumOrchestrator:
 
         return c
 
+    @staticmethod
+    def _merge_event_metadata_into_candidate(c: NewsMomentumCandidate, event: NewsEvent) -> None:
+        """Preserve richer source text when a same-ticker candidate is refreshed."""
+        event_raw = event.raw_text or event.headline or ""
+        if len(event_raw) > len(c.raw_text or c.headline or ""):
+            c.raw_text = event_raw
+        if (not c.source_url) and event.source_url:
+            c.source_url = event.source_url
+        if c.is_vague and not event.is_vague:
+            c.is_vague = False
+
     def _log_rocket_shadow_prediction(
         self,
         c: NewsMomentumCandidate,
@@ -1354,6 +1372,17 @@ class NewsMomentumOrchestrator:
             return True
 
         return False
+
+    def _duplicate_event_should_refresh_existing_candidate(self, event: NewsEvent) -> bool:
+        """Allow duplicate-looking events through when they improve an active candidate."""
+        existing = self._candidate_by_ticker.get(event.ticker)
+        if existing is None:
+            return False
+        if self._event_upgrades_existing_candidate(event, existing):
+            return True
+        event_raw = event.raw_text or event.headline or ""
+        existing_raw = existing.raw_text or existing.headline or ""
+        return len(event_raw) > len(existing_raw)
 
     async def _enrich_with_market_data(self, c: NewsMomentumCandidate) -> None:
         """Fetch live market data for a candidate."""

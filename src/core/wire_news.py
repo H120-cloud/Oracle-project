@@ -159,7 +159,8 @@ def parse_wire_feed_html(
         text = _item_text(node) if node.name in {"item", "entry"} else " ".join(node.get_text(" ", strip=True).split())
         if not text:
             continue
-        tickers = extract_tickers(text, url=_item_url(node, base_url))
+        item_url = _item_url(node, base_url)
+        tickers = extract_tickers(text, url=item_url, include_plain_parens=True)
         if not tickers:
             continue
         timestamp = _item_timestamp(node) or _parse_timestamp(text)
@@ -167,11 +168,12 @@ def parse_wire_feed_html(
             FinvizNewsItem(
                 headline=text[:400],
                 source=source,
-                url=_item_url(node, base_url),
+                url=item_url,
                 timestamp=timestamp,
                 tickers=tickers,
                 category="news",
                 sentiment=_quick_sentiment(text),
+                description=text,
             )
         )
     return items

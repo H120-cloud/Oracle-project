@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Newspaper, Clock, TrendingUp, TrendingDown, Minus, ExternalLink, RefreshCw } from 'lucide-react'
-import { getFinvizNews, getStockTitanNews, getAllNews, getLiveQuote } from '../api_strategic'
+import { Newspaper, Clock, TrendingUp, TrendingDown, Minus, ExternalLink, RefreshCw, AlertTriangle, CheckCircle2, Activity } from 'lucide-react'
+import { getFinvizNews, getStockTitanNews, getAllNews, getLiveQuote, newsMomentumSourceHealth } from '../api_strategic'
 
 const SENTIMENT_COLORS = {
   bullish: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
@@ -90,6 +90,73 @@ function NewsCard({ item, tickerData }) {
   )
 }
 
+function formatSeconds(value) {
+  if (value === null || value === undefined) return '-'
+  if (value < 60) return `${value}s`
+  if (value < 3600) return `${Math.round(value / 60)}m`
+  return `${(value / 3600).toFixed(1)}h`
+}
+
+function statusClass(status) {
+  if (status === 'error') return 'text-red-400 bg-red-500/10 border-red-500/30'
+  if (status === 'stale') return 'text-amber-400 bg-amber-500/10 border-amber-500/30'
+  if (status === 'warning') return 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30'
+  return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30'
+}
+
+function SourceHealthPanel({ health }) {
+  const sources = Object.values(health?.sources || {}).sort((a, b) => (a.source || '').localeCompare(b.source || ''))
+  const problems = health?.problem_sources?.length || 0
+  return (
+    <div className="card">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Activity className="w-4 h-4 text-oracle-400" />
+          <h3 className="text-sm font-semibold text-gray-400">Scraper Health</h3>
+        </div>
+        <span className={`text-[11px] px-2 py-0.5 rounded border ${problems ? 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30' : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30'}`}>
+          {problems ? `${problems} issue${problems === 1 ? '' : 's'}` : 'Healthy'}
+        </span>
+      </div>
+      {sources.length === 0 ? (
+        <p className="text-xs text-gray-500">No source-health samples yet. Data appears after the scanner completes a news loop.</p>
+      ) : (
+        <div className="space-y-2">
+          {sources.map((source) => {
+            const StatusIcon = source.status === 'ok' ? CheckCircle2 : AlertTriangle
+            return (
+              <div key={source.source} className="rounded-lg border border-gray-800 bg-gray-900/40 p-3">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <StatusIcon className={`w-4 h-4 ${source.status === 'ok' ? 'text-emerald-400' : 'text-yellow-400'}`} />
+                    <span className="text-sm text-white font-medium truncate">{source.source}</span>
+                  </div>
+                  <span className={`text-[10px] uppercase px-2 py-0.5 rounded border ${statusClass(source.status)}`}>
+                    {source.status}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                  <div className="text-gray-500">Fetched <span className="text-gray-300">{source.headlines_fetched}</span></div>
+                  <div className="text-gray-500">With ticker <span className="text-gray-300">{source.tickered_headline_count}</span></div>
+                  <div className="text-gray-500">No ticker <span className="text-gray-300">{source.untickered_headline_count}</span></div>
+                  <div className="text-gray-500">Dropped <span className="text-gray-300">{source.dropped_headline_count}</span></div>
+                  <div className="text-gray-500">No time <span className="text-gray-300">{source.missing_timestamp_count}</span></div>
+                  <div className="text-gray-500">Errors <span className={source.parse_error_count ? 'text-red-400' : 'text-gray-300'}>{source.parse_error_count}</span></div>
+                  <div className="text-gray-500">Avg delay <span className="text-gray-300">{formatSeconds(source.avg_latency_seconds)}</span></div>
+                  <div className="text-gray-500">Last ok <span className="text-gray-300">{formatSeconds(source.last_successful_parse_age_seconds)}</span></div>
+                </div>
+                {source.warnings?.length > 0 && (
+                  <p className="mt-2 text-[11px] text-yellow-300 leading-snug">{source.warnings[source.warnings.length - 1]}</p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function News() {
   const [news, setNews] = useState([])
   const [blogs, setBlogs] = useState([])
@@ -100,6 +167,7 @@ export default function News() {
   const [tickerData, setTickerData] = useState({})
   const [tickerFilter, setTickerFilter] = useState('all')
   const [newsSource, setNewsSource] = useState('all') // 'all', 'finviz', 'stocktitan'
+  const [sourceHealth, setSourceHealth] = useState(null)
 
   const fetchNews = useCallback(async ({ forceRefresh = false } = {}) => {
     setLoading(true)
@@ -148,6 +216,12 @@ export default function News() {
           }
         })
         setTickerData(newTickerData)
+      }
+
+      try {
+        setSourceHealth(await newsMomentumSourceHealth())
+      } catch {
+        // News feed should remain usable even if the diagnostic endpoint is unavailable.
       }
     } catch (err) {
       setError(err.message || 'Failed to fetch news')
@@ -281,6 +355,8 @@ export default function News() {
 
         {/* Sidebar Stats */}
         <div className="space-y-4">
+          <SourceHealthPanel health={sourceHealth} />
+
           <div className="card">
             <h3 className="text-sm font-semibold text-gray-400 mb-3">Sentiment Overview</h3>
             <div className="space-y-2">

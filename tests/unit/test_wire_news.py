@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from src.core.wire_news import WireNewsScraper
+from src.core.wire_news import parse_wire_feed_html
 
 
 class _Response:
@@ -61,3 +62,22 @@ async def test_wire_scraper_reports_failed_source_even_when_other_source_succeed
 
     assert len(summary.news_items) == 1
     assert getattr(summary, "failed_sources") == {"BusinessWire": 1}
+
+
+def test_wire_feed_extracts_plain_parentheses_and_preserves_full_description():
+    long_detail = " ".join(["strategic acquisition"] * 60)
+    xml = f"""
+    <rss><channel><item>
+      <title>ExampleCo (BGMS) announces share exchange</title>
+      <description>{long_detail}</description>
+      <pubDate>Thu, 04 Jun 2026 12:00:00 GMT</pubDate>
+      <link>https://wire.example/news/release.html</link>
+    </item></channel></rss>
+    """
+
+    items = parse_wire_feed_html(xml, source="BusinessWire", base_url="https://wire.example/rss")
+
+    assert len(items) == 1
+    assert items[0].tickers == ["BGMS"]
+    assert len(items[0].headline) <= 400
+    assert long_detail in items[0].description

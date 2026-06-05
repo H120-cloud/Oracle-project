@@ -49,8 +49,9 @@ class NewsMomentumEODReviewer:
         Returns a summary dict.
         """
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if not force and self._last_report_date == today:
+        if not force and (self._last_report_date == today or self._has_report_for_date(today)):
             logger.info("EOD review already ran today (%s)", today)
+            self._last_report_date = today
             return {"status": "already_ran", "date": today}
 
         logger.info("EOD review starting for %s", today)
@@ -70,6 +71,21 @@ class NewsMomentumEODReviewer:
 
         if not big_movers:
             logger.info("EOD review: no movers >= %s%% today", MIN_GAINER_PCT)
+            self._save_report({
+                "date": today,
+                "movers_reviewed": 0,
+                "missed_discovery": [],
+                "missed_alert": [],
+                "caught": [],
+                "summary": {
+                    "total_big_movers": 0,
+                    "missed_discovery_count": 0,
+                    "missed_alert_count": 0,
+                    "caught_count": 0,
+                    "discovery_rate_pct": 100.0,
+                    "alert_rate_pct": 100.0,
+                },
+            })
             self._last_report_date = today
             return {"status": "no_movers", "date": today, "gainers_count": len(gainers)}
 
@@ -245,6 +261,15 @@ class NewsMomentumEODReviewer:
         existing = sorted(existing, key=lambda r: r.get("date", ""))[-30:]
         save_json_file(EOD_REPORT_FILE, existing)
 
+    def _has_report_for_date(self, report_date: str) -> bool:
+        """Return True if a completed report for this UTC date already exists."""
+        try:
+            reports = load_json_file(EOD_REPORT_FILE, default=[])
+            return any(r.get("date") == report_date for r in reports if isinstance(r, dict))
+        except Exception as exc:
+            logger.debug("EOD review: failed to check existing report date %s: %s", report_date, exc)
+            return False
+
     async def _send_summary_telegram(self, report: Dict) -> None:
         """Send EOD summary to Telegram."""
         try:
@@ -279,7 +304,14 @@ class NewsMomentumEODReviewer:
                 )
 
         try:
-            await send_telegram_alert("\n".join(lines), parse_mode="HTML")
+            await send_telegram_alert(
+                "\n".join(lines),
+                parse_mode="HTML",
+                alert_id=f"news_momentum_eod_{report['date']}",
+                alert_type="news_momentum_eod",
+                ticker="EOD",
+                priority=8,
+            )
         except Exception as exc:
             logger.warning("EOD summary telegram failed: %s", exc)
 

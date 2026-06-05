@@ -774,5 +774,19 @@
   "label_provenance": "comprehensive_battery",
   "status": "confirmed",
   "regression_for": "extensive_audit_2026_05_29"
+ },
+ {
+  "id": "smtk_global_electronics_deal_001",
+  "ticker": "SMTK",
+  "headline": "SmartKem stock soars after landing deal with global electronics giant",
+  "source": "historical_miss",
+  "expected_category": "corporate",
+  "expected_sub_type": "major_partnership",
+  "expected_is_negative": false,
+  "should_alert": true,
+  "notes": "SMTK-style informal 'landing deal with global electronics giant' headline should not be scored as unknown/other.",
+  "label_provenance": "user_reported_miss",
+  "status": "confirmed",
+  "regression_for": "smtk_miss_2026_06_05"
  }
 ]

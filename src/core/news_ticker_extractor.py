@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 SKIP_TICKERS = {
     "AI", "API", "CEO", "CFO", "ETF", "ET", "FDA", "IPO", "LLC", "NAV",
     "PLC", "RSS", "SEC", "USA", "USD", "LIVE", "NEWS", "TODAY",
+    "NASDAQ", "NYSE", "AMEX", "OTC", "TSX", "TSXV", "CSE", "LSE", "AIM",
 }
 
 _EXCHANGES = (

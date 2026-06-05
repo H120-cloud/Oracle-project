@@ -15,6 +15,8 @@ def _now() -> datetime:
 class SourceHealthSnapshot:
     source: str
     headlines_fetched: int = 0
+    tickered_headline_count: int = 0
+    untickered_headline_count: int = 0
     missing_timestamp_count: int = 0
     parse_error_count: int = 0
     dropped_headline_count: int = 0
@@ -22,6 +24,7 @@ class SourceHealthSnapshot:
     latency_total_seconds: float = 0.0
     latency_max_seconds: float = 0.0
     last_successful_parse_time: Optional[datetime] = None
+    last_parse_error_at: Optional[datetime] = None
     last_warning_at: Optional[datetime] = None
     warnings: List[str] = field(default_factory=list)
 
@@ -36,6 +39,12 @@ class SourceHealthSnapshot:
         if self.latency_sample_count <= 0:
             return 0.0
         return self.latency_total_seconds / self.latency_sample_count
+
+    @property
+    def dropped_headline_rate(self) -> float:
+        if self.headlines_fetched <= 0:
+            return 0.0
+        return self.dropped_headline_count / self.headlines_fetched
 
 
 class SourceHealthTracker:
@@ -59,6 +68,9 @@ class SourceHealthTracker:
             self._snapshots[key] = SourceHealthSnapshot(source=source)
         return self._snapshots[key]
 
+    def reset(self) -> None:
+        self._snapshots.clear()
+
     def record_fetch(self, source: str, headlines_fetched: int, *, now: Optional[datetime] = None) -> None:
         snap = self.snapshot(source)
         snap.headlines_fetched += max(0, int(headlines_fetched or 0))
@@ -68,12 +80,22 @@ class SourceHealthTracker:
     def record_parse_error(self, source: str, *, now: Optional[datetime] = None) -> None:
         snap = self.snapshot(source)
         snap.parse_error_count += 1
+        snap.last_parse_error_at = now or _now()
 
     def record_missing_timestamp(self, source: str, count: int = 1) -> None:
         self.snapshot(source).missing_timestamp_count += max(0, int(count or 0))
 
     def record_dropped_headline(self, source: str, count: int = 1) -> None:
         self.snapshot(source).dropped_headline_count += max(0, int(count or 0))
+
+    def record_tickered_headline(self, source: str, count: int = 1) -> None:
+        self.snapshot(source).tickered_headline_count += max(0, int(count or 0))
+
+    def record_untickered_headline(self, source: str, count: int = 1) -> None:
+        count = max(0, int(count or 0))
+        snap = self.snapshot(source)
+        snap.untickered_headline_count += count
+        snap.dropped_headline_count += count
 
     def record_latency(
         self,
@@ -129,25 +151,65 @@ class SourceHealthTracker:
                     warnings.append(warning)
         return warnings
 
-    def to_dict(self) -> dict[str, dict[str, object]]:
+    def to_dict(self, *, now: Optional[datetime] = None) -> dict[str, dict[str, object]]:
+        now = now or _now()
         return {
             key: {
+                "source": snap.source,
+                "status": self._status_for_snapshot(snap, now),
                 "headlines_fetched": snap.headlines_fetched,
+                "tickered_headline_count": snap.tickered_headline_count,
+                "untickered_headline_count": snap.untickered_headline_count,
                 "missing_timestamp_count": snap.missing_timestamp_count,
                 "parse_error_count": snap.parse_error_count,
                 "dropped_headline_count": snap.dropped_headline_count,
+                "dropped_headline_rate": round(snap.dropped_headline_rate, 4),
                 "last_successful_parse_time": (
                     snap.last_successful_parse_time.isoformat()
                     if snap.last_successful_parse_time
                     else None
                 ),
+                "last_successful_parse_age_seconds": (
+                    max(0, int((now - snap.last_successful_parse_time).total_seconds()))
+                    if snap.last_successful_parse_time
+                    else None
+                ),
+                "last_warning_at": snap.last_warning_at.isoformat() if snap.last_warning_at else None,
+                "last_parse_error_at": snap.last_parse_error_at.isoformat() if snap.last_parse_error_at else None,
+                "warnings": list(snap.warnings[-5:]),
                 "missing_timestamp_rate": snap.missing_timestamp_rate,
                 "avg_latency_seconds": round(snap.avg_latency_seconds, 2),
                 "max_latency_seconds": round(snap.latency_max_seconds, 2),
                 "latency_sample_count": snap.latency_sample_count,
+                "problem_count": (
+                    snap.missing_timestamp_count
+                    + snap.parse_error_count
+                    + snap.dropped_headline_count
+                ),
             }
             for key, snap in self._snapshots.items()
         }
+
+    def _status_for_snapshot(self, snap: SourceHealthSnapshot, now: datetime) -> str:
+        if (
+            snap.parse_error_count > 0
+            and snap.last_parse_error_at is not None
+            and (
+                snap.last_successful_parse_time is None
+                or snap.last_parse_error_at > snap.last_successful_parse_time
+            )
+        ):
+            return "error"
+        if snap.last_successful_parse_time and now - snap.last_successful_parse_time >= self.stale_after:
+            return "stale"
+        if (
+            snap.headlines_fetched >= 10
+            and snap.missing_timestamp_rate >= self.missing_timestamp_rate_threshold
+        ):
+            return "warning"
+        if snap.warnings:
+            return "warning"
+        return "ok"
 
     def _maybe_warn(self, snap: SourceHealthSnapshot, warning: str, now: datetime) -> bool:
         if snap.last_warning_at and now - snap.last_warning_at < self.warning_cooldown:

@@ -190,3 +190,32 @@ class TestDeduplicateNewsItems:
         ]
         result = deduplicate_news_items(items)
         assert len(result) == 2
+
+    def test_merges_richer_duplicate_metadata_for_classification(self):
+        """Keep earliest publish time but do not discard richer source text."""
+        base = datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc)
+        items = [
+            FinvizNewsItem(
+                headline="Bio Green Med to acquire Future NRG",
+                source="Finviz",
+                url="http://finviz.test/bgms",
+                timestamp=base,
+                tickers=["BGMS"],
+            ),
+            FinvizNewsItem(
+                headline="Bio Green Med to acquire Future NRG",
+                source="StockTitan",
+                url="http://stocktitan.test/bgms",
+                timestamp=base + timedelta(minutes=2),
+                tickers=["BGMS", "FNRG"],
+                description="Share-for-share exchange would make Future NRG a wholly owned BGMS unit.",
+            ),
+        ]
+
+        result = deduplicate_news_items(items)
+
+        assert len(result) == 1
+        assert result[0].source == "Finviz"
+        assert result[0].timestamp == base
+        assert result[0].tickers == ["BGMS", "FNRG"]
+        assert "wholly owned BGMS unit" in result[0].description

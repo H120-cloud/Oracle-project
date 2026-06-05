@@ -65,6 +65,7 @@ class FinvizNewsItem:
     tickers: List[str] = field(default_factory=list)
     category: str = "news"
     sentiment: str = "neutral"
+    description: str = ""
     
     def to_dict(self):
         return {
@@ -75,6 +76,7 @@ class FinvizNewsItem:
             "tickers": self.tickers,
             "category": self.category,
             "sentiment": self.sentiment,
+            "description": self.description,
         }
 
 @dataclass

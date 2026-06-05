@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 FINVIZ_GAINERS_URL = "https://finviz.com/screener?v=111&s=ta_topgainers"
 FINVIZ_UNDER2_URL = "https://finviz.com/screener?v=111&f=sh_curvol_o10000%2Csh_price_u2"
+FINVIZ_ACTIVE_URL = "https://finviz.com/screener?v=111&s=ta_mostactive"
+FINVIZ_UNUSUAL_VOLUME_URL = "https://finviz.com/screener?v=111&s=ta_unusualvolume"
+FINVIZ_MOST_VOLATILE_URL = "https://finviz.com/screener?v=111&s=ta_mostvolatile"
+FINVIZ_UNDER5_ACTIVE_URL = "https://finviz.com/screener?v=111&f=sh_curvol_o500000%2Csh_price_u5"
+FINVIZ_PENNY_MOVERS_URL = "https://finviz.com/screener?v=111&f=sh_curvol_o50000%2Csh_price_u1"
 
 _BAD_TICKERS_PATH = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "agentic", "bad_tickers.json")
@@ -112,6 +117,51 @@ def fetch_finviz_under2_high_volume_tickers(
     validate: bool = True,
 ) -> list[str]:
     tickers = scrape_finviz_tickers(FINVIZ_UNDER2_URL, validate=validate)
+    return tickers[:max_results] if max_results else tickers
+
+
+def fetch_finviz_most_active_tickers(
+    *,
+    max_results: int | None = None,
+    validate: bool = True,
+) -> list[str]:
+    tickers = scrape_finviz_tickers(FINVIZ_ACTIVE_URL, validate=validate)
+    return tickers[:max_results] if max_results else tickers
+
+
+def fetch_finviz_unusual_volume_tickers(
+    *,
+    max_results: int | None = None,
+    validate: bool = True,
+) -> list[str]:
+    tickers = scrape_finviz_tickers(FINVIZ_UNUSUAL_VOLUME_URL, validate=validate)
+    return tickers[:max_results] if max_results else tickers
+
+
+def fetch_finviz_most_volatile_tickers(
+    *,
+    max_results: int | None = None,
+    validate: bool = True,
+) -> list[str]:
+    tickers = scrape_finviz_tickers(FINVIZ_MOST_VOLATILE_URL, validate=validate)
+    return tickers[:max_results] if max_results else tickers
+
+
+def fetch_finviz_under5_active_tickers(
+    *,
+    max_results: int | None = None,
+    validate: bool = True,
+) -> list[str]:
+    tickers = scrape_finviz_tickers(FINVIZ_UNDER5_ACTIVE_URL, validate=validate)
+    return tickers[:max_results] if max_results else tickers
+
+
+def fetch_finviz_penny_mover_tickers(
+    *,
+    max_results: int | None = None,
+    validate: bool = True,
+) -> list[str]:
+    tickers = scrape_finviz_tickers(FINVIZ_PENNY_MOVERS_URL, validate=validate)
     return tickers[:max_results] if max_results else tickers
 
 

@@ -11,14 +11,18 @@ they are trivially testable against temp files.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from src.core.agentic.news_alert_latency_trace import aware_utc, seconds_between
+from src.core.agentic.news_alert_latency_trace import aware_utc, iso, seconds_between
 from src.utils.data_paths import agentic_path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # ── Default artifact locations ─────────────────────────────────────────────
 
@@ -85,7 +89,9 @@ def _in_range(value: Any, start: Optional[str], end: Optional[str]) -> bool:
 def _paginate(rows: list, page: int, page_size: int) -> tuple[list, int, int, int]:
     total = len(rows)
     page = max(1, int(page or 1))
-    page_size = max(1, min(int(page_size or 50), 1000))
+    # Ceiling is generous so full-dataset exports can request every row; the
+    # public list endpoints separately cap page_size at 1000 via Query(le=1000).
+    page_size = max(1, min(int(page_size or 50), 100_000))
     start = (page - 1) * page_size
     return rows[start:start + page_size], total, page, page_size
 
@@ -442,8 +448,159 @@ def read_telegram_outbox(
     return _envelope(items, total_n, page, page_size, summary=summary)
 
 
+# ── Download / export ───────────────────────────────────────────────────────
+
+_EXPORT_READERS = {
+    "news-latency": read_news_latency,
+    "rocket-shadow": read_rocket_shadow,
+    "telegram-outbox": read_telegram_outbox,
+}
+_EXPORT_FORMATS = {"csv", "jsonl", "json"}
+
+
+def _flatten_row(row: dict) -> dict:
+    """One-level flatten; nested dicts -> prefixed keys, lists/objs -> JSON text."""
+    flat: dict[str, Any] = {}
+    for key, value in row.items():
+        if isinstance(value, dict):
+            for sub, sub_val in value.items():
+                flat[f"{key}_{sub}"] = (
+                    json.dumps(sub_val, default=str)
+                    if isinstance(sub_val, (dict, list)) else sub_val
+                )
+        elif isinstance(value, list):
+            flat[key] = json.dumps(value, default=str)
+        else:
+            flat[key] = value
+    return flat
+
+
+def rows_to_csv(rows: list[dict]) -> str:
+    flat_rows = [_flatten_row(r) for r in rows]
+    columns: list[str] = []
+    seen: set[str] = set()
+    for r in flat_rows:
+        for key in r:
+            if key not in seen:
+                seen.add(key)
+                columns.append(key)
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    for r in flat_rows:
+        writer.writerow({k: ("" if r.get(k) is None else r.get(k)) for k in columns})
+    return buf.getvalue()
+
+
+def rows_to_jsonl(rows: list[dict]) -> str:
+    return "".join(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in rows)
+
+
+def rows_to_json(rows: list[dict]) -> str:
+    return json.dumps(rows, ensure_ascii=False, indent=2, default=str)
+
+
+def export_diagnostics(kind: str, fmt: str = "csv", *, filters: Optional[dict] = None) -> dict:
+    """Render a filtered diagnostics dataset as CSV / JSONL / JSON.
+
+    Returns ``{"content", "media_type", "filename"}``. Raises ValueError on an
+    unknown kind/format (the route maps that to HTTP 400).
+    """
+    if kind not in _EXPORT_READERS:
+        raise ValueError(f"unknown export kind: {kind}")
+    fmt = (fmt or "csv").lower()
+    if fmt not in _EXPORT_FORMATS:
+        raise ValueError(f"unsupported format: {fmt}")
+
+    reader = _EXPORT_READERS[kind]
+    data = reader(page=1, page_size=100_000, **(filters or {}))
+    rows = data.get("items", [])
+
+    if fmt == "jsonl":
+        content, media = rows_to_jsonl(rows), "application/x-ndjson"
+    elif fmt == "json":
+        content, media = rows_to_json(rows), "application/json"
+    else:
+        content, media = rows_to_csv(rows), "text/csv"
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return {
+        "content": content,
+        "media_type": media,
+        "filename": f"{kind}_{stamp}.{fmt}",
+    }
+
+
+# ── Report catalog (allowlisted file downloads) ─────────────────────────────
+
+def docs_dir() -> Path:
+    return _PROJECT_ROOT / "docs"
+
+
+def report_files() -> dict[str, tuple[Path, str]]:
+    """Allowlist: report basename -> (resolved path, type).
+
+    Keys are plain basenames (no path separators) so the download route can use
+    a non-greedy path param. This is the primary path-traversal defense: a name
+    is only servable if it is an exact key here.
+    """
+    docs = docs_dir()
+    return {
+        "news_alert_latency_trace.jsonl": (agentic_path("news_alert_latency_trace.jsonl"), "jsonl"),
+        "rocket_model_shadow_predictions.jsonl": (agentic_path("rocket_model_shadow_predictions.jsonl"), "jsonl"),
+        "telegram_outbox.jsonl": (agentic_path("telegram_outbox.jsonl"), "jsonl"),
+        "news_alert_latency_failure_audit.md": (docs / "news_alert_latency_failure_audit.md", "markdown"),
+        "rocket_catboost_baseline_report.md": (docs / "rocket_catboost_baseline_report.md", "markdown"),
+        "rocket_model_shadow_report.md": (docs / "rocket_model_shadow_report.md", "markdown"),
+        "telegram_outbox_reliability.md": (docs / "telegram_outbox_reliability.md", "markdown"),
+        "admin_diagnostics_dashboard_report.md": (docs / "admin_diagnostics_dashboard_report.md", "markdown"),
+    }
+
+
+_REPORT_MEDIA = {"markdown": "text/markdown", "jsonl": "application/x-ndjson"}
+
+
+def list_reports() -> dict:
+    items = []
+    for name, (path, rtype) in report_files().items():
+        exists = path.exists()
+        stat = path.stat() if exists else None
+        items.append({
+            "name": name,
+            "type": rtype,
+            "exists": exists,
+            "size_bytes": stat.st_size if stat else 0,
+            "last_modified": iso(datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)) if stat else None,
+        })
+    return {"total": len(items), "items": items}
+
+
+def resolve_report(name: str) -> Optional[dict]:
+    """Return download info for an allowlisted report, or None if not allowed.
+
+    A name not present in :func:`report_files` (including any path-traversal
+    attempt) returns None. A name that is allowlisted but whose file is not yet
+    generated returns ``{"missing": True}``.
+    """
+    files = report_files()
+    if name not in files:
+        return None
+    path, rtype = files[name]
+    if not path.exists():
+        return {"name": name, "type": rtype, "missing": True}
+    return {
+        "name": name,
+        "type": rtype,
+        "missing": False,
+        "content": path.read_text(encoding="utf-8"),
+        "media_type": _REPORT_MEDIA.get(rtype, "application/octet-stream"),
+    }
+
+
 __all__ = [
     "read_news_latency", "read_rocket_shadow", "read_telegram_outbox",
     "read_source_health", "read_blocked_alerts", "read_fast_watch_alerts",
     "news_latency_path", "rocket_shadow_path", "telegram_outbox_path",
+    "export_diagnostics", "rows_to_csv", "rows_to_jsonl", "rows_to_json",
+    "list_reports", "resolve_report", "report_files", "docs_dir",
 ]

@@ -266,6 +266,11 @@ def _client(monkeypatch, tmp_path):
     monkeypatch.setattr(ad, "rocket_shadow_path", lambda: rk)
     monkeypatch.setattr(ad, "telegram_outbox_path", lambda: ob)
 
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "admin_diagnostics_dashboard_report.md").write_text("# Admin Diagnostics\nhello world", encoding="utf-8")
+    monkeypatch.setattr(ad, "docs_dir", lambda: docs)
+
     app = FastAPI()
     app.include_router(route.router, prefix="/api/v1")
     return TestClient(app)
@@ -310,3 +315,98 @@ def test_route_is_read_only_no_post(monkeypatch, tmp_path):
     # No write verbs are defined -> 405 Method Not Allowed.
     assert client.post("/api/v1/admin/news-latency").status_code == 405
     assert client.delete("/api/v1/admin/telegram-outbox").status_code == 405
+
+
+# ── Download feature ────────────────────────────────────────────────────────
+
+def test_download_csv_export_works(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    r = client.get("/api/v1/admin/download/news-latency", params={"format": "csv"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    assert "attachment; filename=" in r.headers["content-disposition"]
+    body = r.text
+    assert "ticker" in body.splitlines()[0]  # header row
+    assert "AAPL" in body
+
+
+def test_download_jsonl_works(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    r = client.get("/api/v1/admin/download/rocket-shadow", params={"format": "jsonl"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/x-ndjson")
+    lines = [l for l in r.text.splitlines() if l.strip()]
+    assert json.loads(lines[0])["ticker"] == "AAPL"
+
+
+def test_download_bad_format_rejected(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    assert client.get("/api/v1/admin/download/news-latency", params={"format": "exe"}).status_code == 400
+
+
+def test_reports_listing(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    r = client.get("/api/v1/admin/reports")
+    assert r.status_code == 200
+    by_name = {i["name"]: i for i in r.json()["items"]}
+    assert "admin_diagnostics_dashboard_report.md" in by_name
+    rep = by_name["admin_diagnostics_dashboard_report.md"]
+    assert rep["exists"] is True
+    assert rep["type"] == "markdown"
+    assert rep["size_bytes"] > 0
+
+
+def test_valid_report_download_works(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    r = client.get("/api/v1/admin/download/report/admin_diagnostics_dashboard_report.md")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/markdown")
+    assert 'filename="admin_diagnostics_dashboard_report.md"' in r.headers["content-disposition"]
+    assert "hello world" in r.text
+
+
+def test_invalid_report_name_rejected(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    assert client.get("/api/v1/admin/download/report/secret.md").status_code == 404
+    assert client.get("/api/v1/admin/download/report/oracle.db").status_code == 404
+
+
+def test_path_traversal_rejected(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    for evil in (
+        "..%2F..%2F.env",
+        "..%2F..%2Foracle.db",
+        "%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+        "....//....//.env",
+    ):
+        assert client.get(f"/api/v1/admin/download/report/{evil}").status_code in (404, 400)
+
+
+def test_allowlisted_but_missing_report_is_404(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    # allowlisted name, but the doc file was never generated in this temp docs dir
+    assert client.get("/api/v1/admin/download/report/telegram_outbox_reliability.md").status_code == 404
+
+
+# ── Service-level export helpers ────────────────────────────────────────────
+
+def test_rows_to_csv_and_jsonl_pure():
+    rows = [{"ticker": "AAPL", "derived": {"total_latency_seconds": 5.0}, "tags": ["a", "b"]}]
+    csv_out = ad.rows_to_csv(rows)
+    assert "derived_total_latency_seconds" in csv_out.splitlines()[0]
+    assert "AAPL" in csv_out
+    jsonl_out = ad.rows_to_jsonl(rows)
+    assert json.loads(jsonl_out.strip())["ticker"] == "AAPL"
+
+
+def test_export_unknown_kind_or_format_raises():
+    with pytest.raises(ValueError):
+        ad.export_diagnostics("nope", "csv")
+    with pytest.raises(ValueError):
+        ad.export_diagnostics("news-latency", "pdf")
+
+
+def test_resolve_report_rejects_unknown(monkeypatch, tmp_path):
+    monkeypatch.setattr(ad, "docs_dir", lambda: tmp_path)
+    assert ad.resolve_report("../../etc/passwd") is None
+    assert ad.resolve_report("anything.md") is None

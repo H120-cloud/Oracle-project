@@ -1,5 +1,5 @@
 // Admin Diagnostics API client (read-only).
-import { fetchJSON, BASE } from './api_shared';
+import { fetchJSON, BASE, getFrontendSessionToken } from './api_shared';
 
 function qs(params) {
   const sp = new URLSearchParams();
@@ -16,3 +16,32 @@ export const getTelegramOutbox = (p) => fetchJSON(`${BASE}/admin/telegram-outbox
 export const getSourceHealth = (p) => fetchJSON(`${BASE}/admin/source-health${qs(p)}`);
 export const getBlockedAlerts = (p) => fetchJSON(`${BASE}/admin/blocked-alerts${qs(p)}`);
 export const getFastWatchAlerts = (p) => fetchJSON(`${BASE}/admin/fast-watch-alerts${qs(p)}`);
+export const getReports = () => fetchJSON(`${BASE}/admin/reports`);
+
+// URL builders for downloads.
+export const dataDownloadUrl = (kind, fmt, params) =>
+  `${BASE}/admin/download/${kind}${qs({ ...(params || {}), format: fmt })}`;
+export const reportDownloadUrl = (name) =>
+  `${BASE}/admin/download/report/${encodeURIComponent(name)}`;
+
+// Authenticated file download (the bearer token must travel in a header, so a
+// plain <a href> won't work). Fetches as a blob and triggers a browser save.
+export async function downloadAdminFile(url, fallbackName) {
+  const token = getFrontendSessionToken();
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const blob = await res.blob();
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = /filename="?([^"]+)"?/.exec(cd);
+  const name = (m && m[1]) || fallbackName || 'download';
+  const objUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objUrl;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objUrl);
+}

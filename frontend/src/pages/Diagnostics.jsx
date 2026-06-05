@@ -2,20 +2,29 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
-import { ArrowUpDown, Download } from 'lucide-react'
+import { ArrowUpDown, Download, FileDown } from 'lucide-react'
 import {
   getNewsLatency, getRocketShadow, getTelegramOutbox,
   getSourceHealth, getBlockedAlerts, getFastWatchAlerts,
+  getReports, downloadAdminFile, dataDownloadUrl, reportDownloadUrl,
 } from '../api_admin'
 
 const TABS = [
   { id: 'news-latency', label: 'News Latency' },
   { id: 'rocket-shadow', label: 'Rocket Shadow' },
   { id: 'telegram-outbox', label: 'Telegram Outbox' },
+  { id: 'reports', label: 'Reports' },
   { id: 'source-health', label: 'Source Health' },
   { id: 'blocked-alerts', label: 'Blocked Alerts' },
   { id: 'fast-watch', label: 'FAST WATCH' },
 ]
+
+const fmtBytes = (n) => {
+  if (n == null) return '—'
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
 
 // ── formatters ─────────────────────────────────────────────────────────────
 const fmtTime = (v) => (v ? new Date(v).toLocaleString() : '—')
@@ -265,9 +274,44 @@ function TopList({ title, rows, metric, fmt }) {
   )
 }
 
+// ── server-side downloads ───────────────────────────────────────────────────
+function DownloadButton({ label, url, fallbackName, icon: Icon = Download }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const onClick = async () => {
+    setBusy(true); setErr(null)
+    try {
+      await downloadAdminFile(url, fallbackName)
+    } catch (e) {
+      setErr(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <button onClick={onClick} disabled={busy}
+      title={err ? `Failed: ${err}` : label}
+      className={`btn-ghost flex items-center gap-1.5 ${err ? 'border-red-600 text-red-400' : ''}`}>
+      <Icon className="w-4 h-4" />{busy ? 'Downloading…' : label}
+    </button>
+  )
+}
+
+function DownloadBar({ kind, filters }) {
+  const label = { 'news-latency': 'News Latency', 'rocket-shadow': 'Rocket Shadow', 'telegram-outbox': 'Telegram Outbox' }[kind]
+  return (
+    <div className="flex flex-wrap items-center gap-2 mb-4">
+      <span className="text-xs text-gray-500 mr-1">Download {label}:</span>
+      <DownloadButton label="CSV" url={dataDownloadUrl(kind, 'csv', filters)} fallbackName={`${kind}.csv`} />
+      <DownloadButton label="JSONL" url={dataDownloadUrl(kind, 'jsonl', filters)} fallbackName={`${kind}.jsonl`} />
+      <DownloadButton label="JSON" url={dataDownloadUrl(kind, 'json', filters)} fallbackName={`${kind}.json`} />
+    </div>
+  )
+}
+
 // ── generic tab ─────────────────────────────────────────────────────────────
 function DiagnosticsTab({ fetcher, columns, statusOptions, sourceLabel, csvName,
-  renderCards, renderCharts, renderTop }) {
+  downloadKind, renderCards, renderCharts, renderTop }) {
   const empty = { ticker: '', status: '', source: '', start: '', end: '', page_size: 50 }
   const [draft, setDraft] = useState(empty)
   const [applied, setApplied] = useState(empty)
@@ -281,6 +325,11 @@ function DiagnosticsTab({ fetcher, columns, statusOptions, sourceLabel, csvName,
   }, [applied, page])
   const { loading, error, data } = useDiagnostics(fetcher, params)
   const rows = data?.items || []
+  const downloadFilters = useMemo(() => {
+    const { page_size, ...rest } = params // eslint-disable-line no-unused-vars
+    const { page: _p, ...f } = rest // eslint-disable-line no-unused-vars
+    return f
+  }, [params])
 
   return (
     <div>
@@ -290,6 +339,7 @@ function DiagnosticsTab({ fetcher, columns, statusOptions, sourceLabel, csvName,
         onApply={() => { setApplied(draft); setPage(1) }}
         onReset={() => { setDraft(empty); setApplied(empty); setPage(1) }}
       />
+      {downloadKind && <DownloadBar kind={downloadKind} filters={downloadFilters} />}
       {renderCharts && data && <div className="mb-4">{renderCharts(data)}</div>}
       {renderTop && data && <div className="mb-4">{renderTop(data)}</div>}
       {error && <div className="text-red-400 mb-3">Error: {error}</div>}
@@ -347,7 +397,7 @@ const SOURCE_HEALTH_COLUMNS = [
 function NewsLatencyTab() {
   return (
     <DiagnosticsTab
-      fetcher={getNewsLatency} columns={LATENCY_COLUMNS} csvName="news_latency.csv"
+      fetcher={getNewsLatency} columns={LATENCY_COLUMNS} csvName="news_latency.csv" downloadKind="news-latency"
       statusOptions={['alerted', 'delayed', 'blocked', 'duplicate_blocked', 'freshness_blocked', 'unresolved_ticker']}
       renderCards={(d) => (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -372,7 +422,7 @@ function NewsLatencyTab() {
 function RocketShadowTab() {
   return (
     <DiagnosticsTab
-      fetcher={getRocketShadow} columns={ROCKET_COLUMNS} csvName="rocket_shadow.csv"
+      fetcher={getRocketShadow} columns={ROCKET_COLUMNS} csvName="rocket_shadow.csv" downloadKind="rocket-shadow"
       statusOptions={['HIGH', 'MEDIUM', 'LOW']} sourceLabel="Pipeline"
       renderTop={(d) => (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -388,7 +438,7 @@ function RocketShadowTab() {
 function TelegramOutboxTab() {
   return (
     <DiagnosticsTab
-      fetcher={getTelegramOutbox} columns={OUTBOX_COLUMNS} csvName="telegram_outbox.csv"
+      fetcher={getTelegramOutbox} columns={OUTBOX_COLUMNS} csvName="telegram_outbox.csv" downloadKind="telegram-outbox"
       statusOptions={['pending', 'sent', 'failed', 'dead_letter']} sourceLabel="Alert Type"
       renderCards={(d) => (
         <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
@@ -415,10 +465,54 @@ function FastWatchTab() {
   return <DiagnosticsTab fetcher={getFastWatchAlerts} columns={LATENCY_COLUMNS} csvName="fast_watch.csv" />
 }
 
+function ReportsTab() {
+  const { loading, error, data } = useDiagnostics(getReports, {})
+  const items = data?.items || []
+  return (
+    <div>
+      <Card title="Available Reports">
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="text-gray-400">
+              <tr>
+                {['Report', 'Type', 'Last Modified', 'Size', ''].map((h) => (
+                  <th key={h} className="px-3 py-2 text-left font-medium">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800">
+              {error && <tr><td colSpan={5} className="px-3 py-4 text-red-400">Error: {error}</td></tr>}
+              {loading && <tr><td colSpan={5} className="px-3 py-4 text-gray-400">Loading…</td></tr>}
+              {!loading && items.map((r) => (
+                <tr key={r.name} className="hover:bg-gray-900/60">
+                  <td className="px-3 py-2 font-mono text-xs text-gray-200">{r.name}</td>
+                  <td className="px-3 py-2"><Badge status={r.type === 'markdown' ? 'MEDIUM' : 'pending'} /></td>
+                  <td className="px-3 py-2 text-gray-400">{r.last_modified ? fmtTime(r.last_modified) : '—'}</td>
+                  <td className="px-3 py-2 text-gray-400">{r.exists ? fmtBytes(r.size_bytes) : 'not generated'}</td>
+                  <td className="px-3 py-2">
+                    {r.exists ? (
+                      <DownloadButton label="Download" icon={FileDown}
+                        url={reportDownloadUrl(r.name)} fallbackName={r.name} />
+                    ) : <span className="text-xs text-gray-600">unavailable</span>}
+                  </td>
+                </tr>
+              ))}
+              {!loading && items.length === 0 && !error && (
+                <tr><td colSpan={5} className="px-3 py-6 text-center text-gray-600">No reports</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  )
+}
+
 const TAB_COMPONENTS = {
   'news-latency': NewsLatencyTab,
   'rocket-shadow': RocketShadowTab,
   'telegram-outbox': TelegramOutboxTab,
+  'reports': ReportsTab,
   'source-health': SourceHealthTab,
   'blocked-alerts': BlockedAlertsTab,
   'fast-watch': FastWatchTab,

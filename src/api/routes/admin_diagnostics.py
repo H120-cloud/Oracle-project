@@ -11,7 +11,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 
 from src.services import admin_diagnostics as ad
 
@@ -117,3 +118,71 @@ def fast_watch_alerts(
         ticker=ticker, source=source, start=start, end=end,
         page=page, page_size=page_size,
     )
+
+
+# ── Downloads (read-only) ───────────────────────────────────────────────────
+
+_Format = Query("csv", description="Export format: csv | jsonl | json")
+
+
+def _attachment(content: str, media_type: str, filename: str) -> Response:
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _download_dataset(kind: str, fmt: str, filters: dict) -> Response:
+    try:
+        out = ad.export_diagnostics(kind, fmt, filters=filters)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _attachment(out["content"], out["media_type"], out["filename"])
+
+
+@router.get("/download/news-latency", summary="Download news latency (csv/jsonl/json)")
+def download_news_latency(
+    fmt: str = Query("csv", alias="format", description="csv | jsonl | json"),
+    ticker: Optional[str] = _Ticker, source: Optional[str] = _Source,
+    status: Optional[str] = _Status, start: Optional[str] = _Start, end: Optional[str] = _End,
+):
+    return _download_dataset("news-latency", fmt, dict(
+        ticker=ticker, source=source, status=status, start=start, end=end))
+
+
+@router.get("/download/rocket-shadow", summary="Download Rocket shadow predictions (csv/jsonl/json)")
+def download_rocket_shadow(
+    fmt: str = Query("csv", alias="format", description="csv | jsonl | json"),
+    ticker: Optional[str] = _Ticker, source: Optional[str] = _Source,
+    status: Optional[str] = _Status, start: Optional[str] = _Start, end: Optional[str] = _End,
+):
+    return _download_dataset("rocket-shadow", fmt, dict(
+        ticker=ticker, source=source, status=status, start=start, end=end))
+
+
+@router.get("/download/telegram-outbox", summary="Download Telegram outbox (csv/jsonl/json)")
+def download_telegram_outbox(
+    fmt: str = Query("csv", alias="format", description="csv | jsonl | json"),
+    ticker: Optional[str] = _Ticker,
+    status: Optional[str] = Query(None), source: Optional[str] = Query(None, description="alert_type"),
+    start: Optional[str] = _Start, end: Optional[str] = _End,
+):
+    return _download_dataset("telegram-outbox", fmt, dict(
+        ticker=ticker, status=status, alert_type=source, start=start, end=end))
+
+
+@router.get("/reports", summary="List downloadable report files (allowlisted)")
+def reports():
+    return ad.list_reports()
+
+
+@router.get("/download/report/{report_name}", summary="Download an allowlisted report file")
+def download_report(report_name: str):
+    info = ad.resolve_report(report_name)
+    if info is None:
+        # Not in the allowlist (covers path-traversal / arbitrary names).
+        raise HTTPException(status_code=404, detail="Unknown report")
+    if info.get("missing"):
+        raise HTTPException(status_code=404, detail="Report not generated yet")
+    return _attachment(info["content"], info["media_type"], info["name"])

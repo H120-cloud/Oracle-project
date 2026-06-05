@@ -157,3 +157,56 @@ The single `xfailed` is the pre-existing P1 semantic-classifier target, unrelate
 - No edits to News Momentum / Pre-News / Rocket scoring modules.
 - No edits to Telegram gating (`_should_send_telegram_impl`, outbox send logic).
 - No new write/delete endpoints; no mutation of alerts, models, or state files.
+
+---
+
+## Addendum — Report Download Feature
+
+Adds easy, read-only report/data downloads to the dashboard.
+
+### Endpoints added (all GET, read-only)
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /admin/download/news-latency?format=csv\|jsonl\|json` | Export the filtered news-latency dataset |
+| `GET /admin/download/rocket-shadow?format=…` | Export the filtered Rocket-shadow dataset |
+| `GET /admin/download/telegram-outbox?format=…` | Export the filtered Telegram-outbox dataset |
+| `GET /admin/reports` | List allowlisted report files + metadata (name, type, size, last_modified, exists) |
+| `GET /admin/download/report/{report_name}` | Download one **allowlisted** report file (native CSV/JSONL/Markdown) |
+
+The data-export endpoints accept the same filters as their list counterparts
+(`ticker`, `source`, `status`, `start`, `end`), so a download reflects the
+current view. CSV flattens nested fields (`derived.*` → `derived_*`, lists → JSON
+text). Total now: **11 GET-only admin endpoints** (verified programmatically).
+
+### Allowlist + path-traversal defense (`src/services/admin_diagnostics.py`)
+- `report_files()` is a hardcoded allowlist keyed by **plain basename** (no path
+  separators): the 3 JSONL artifacts + 5 `docs/*.md` reports named in the spec.
+- The download route uses a non-greedy `{report_name}` param, so any value
+  containing `/` (i.e. every traversal attempt) fails to match the route. The
+  allowlist membership check is the primary defense — a name not an exact key
+  returns **404**, regardless of encoding.
+- Allowlisted-but-not-yet-generated reports return **404 "Report not generated yet"**.
+- `docs_dir()` is a seam so tests can point the docs root at a temp dir.
+
+### Frontend
+- **Download buttons** on News Latency / Rocket Shadow / Telegram Outbox tabs:
+  CSV / JSONL / JSON (server-side, full filtered dataset). Implemented as an
+  authenticated blob download (`downloadAdminFile`) because the bearer token must
+  travel in a header — a plain `<a href>` can't carry it.
+- **New "Reports" tab** listing every allowlisted report with name, type,
+  last-modified, size, and a Download button (disabled when a report file does
+  not exist yet).
+- The existing in-table "CSV" button (current page, client-side) is retained
+  alongside the new server-side full-dataset downloads.
+
+### Tests (11 new, all passing)
+`tests/unit/test_admin_diagnostics.py`: valid report download, invalid report
+name → 404, **path traversal → 404/400** (4 encoded variants), allowlisted-but-
+missing → 404, CSV export, JSONL download, bad format → 400, reports listing
+metadata, and pure `rows_to_csv` / `rows_to_jsonl` / `export_diagnostics`
+validation. Backend suite: **485 passed, 1 xfailed**. Frontend build: ✓.
+
+> Frontend note: the project ships no JS test runner (no vitest/jest in
+> `package.json`), so "download buttons render correctly" is covered by the
+> production build (which compiles/type-checks all JSX) rather than a unit test;
+> adding a JS test runner would introduce new devDependencies, out of scope here.

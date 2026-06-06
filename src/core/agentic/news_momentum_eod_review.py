@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 EOD_REPORT_FILE = DATA_DIR / "news_momentum_eod_reports.json"
+EOD_TELEGRAM_SENT_FILE = DATA_DIR / "news_momentum_eod_telegram_sent.json"
 
 # Only review tickers that moved at least this much intraday
 MIN_GAINER_PCT = 15.0
@@ -278,6 +279,12 @@ class NewsMomentumEODReviewer:
             logger.warning("Telegram service not available for EOD summary")
             return
 
+        report_date = str(report["date"])
+        alert_id = f"news_momentum_eod_{report_date}"
+        if self._has_telegram_summary_marker(report_date, alert_id):
+            logger.info("EOD summary Telegram already sent/queued for %s", report_date)
+            return
+
         s = report["summary"]
         lines = [
             "<b>📊 NEWS MOMENTUM EOD REPORT</b>",
@@ -307,13 +314,50 @@ class NewsMomentumEODReviewer:
             await send_telegram_alert(
                 "\n".join(lines),
                 parse_mode="HTML",
-                alert_id=f"news_momentum_eod_{report['date']}",
+                alert_id=alert_id,
                 alert_type="news_momentum_eod",
                 ticker="EOD",
                 priority=8,
             )
+            self._mark_telegram_summary_sent(report_date, alert_id)
         except Exception as exc:
             logger.warning("EOD summary telegram failed: %s", exc)
+
+    def _has_telegram_summary_marker(self, report_date: str, alert_id: str) -> bool:
+        """Return True when the EOD Telegram summary was already sent or queued.
+
+        This is separate from the report JSON because manual `force=true`,
+        duplicate scheduler tasks, or app restarts can legitimately regenerate
+        the report while still needing to avoid Telegram spam for the same day.
+        """
+        try:
+            markers = load_json_file(EOD_TELEGRAM_SENT_FILE, default={})
+            if not isinstance(markers, dict):
+                return False
+            marker = markers.get(report_date)
+            if isinstance(marker, dict):
+                return marker.get("alert_id") == alert_id
+            return marker == alert_id
+        except Exception as exc:
+            logger.debug("EOD summary marker check failed for %s: %s", report_date, exc)
+            return False
+
+    def _mark_telegram_summary_sent(self, report_date: str, alert_id: str) -> None:
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            markers = load_json_file(EOD_TELEGRAM_SENT_FILE, default={})
+            if not isinstance(markers, dict):
+                markers = {}
+            markers[report_date] = {
+                "alert_id": alert_id,
+                "marked_at": datetime.now(timezone.utc).isoformat(),
+            }
+            # Keep only recent markers so the file stays tiny.
+            keys = sorted(str(k) for k in markers.keys())[-45:]
+            markers = {k: markers[k] for k in keys if k in markers}
+            save_json_file(EOD_TELEGRAM_SENT_FILE, markers)
+        except Exception as exc:
+            logger.warning("EOD summary marker persistence failed for %s: %s", report_date, exc)
 
     def get_latest_report(self) -> Optional[Dict]:
         reports = load_json_file(EOD_REPORT_FILE, default=[])

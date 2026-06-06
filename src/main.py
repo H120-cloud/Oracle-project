@@ -1842,6 +1842,12 @@ if os.path.isdir(frontend_dist) and os.path.isfile(frontend_index):
     if os.path.isdir(frontend_assets):
         app.mount("/assets", StaticFiles(directory=frontend_assets), name="frontend-assets")
 
+    _FRONTEND_INDEX_HEADERS = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+
     @app.get("/{full_path:path}", include_in_schema=False)
     def frontend_spa(full_path: str):
         if full_path.startswith("api/"):
@@ -1849,8 +1855,10 @@ if os.path.isdir(frontend_dist) and os.path.isfile(frontend_index):
 
         requested = os.path.abspath(os.path.join(frontend_dist, full_path))
         if requested.startswith(frontend_dist) and os.path.isfile(requested):
+            if requested == frontend_index:
+                return FileResponse(requested, headers=_FRONTEND_INDEX_HEADERS)
             return FileResponse(requested)
-        return FileResponse(frontend_index)
+        return FileResponse(frontend_index, headers=_FRONTEND_INDEX_HEADERS)
 else:
     @app.get("/")
     def root():

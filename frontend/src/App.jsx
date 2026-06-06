@@ -28,6 +28,8 @@ const NAV = [
   { to: '/diagnostics', icon: Gauge, label: 'Diagnostics' },
 ]
 
+const FRONTEND_BUILD_TAG = '2026-06-06-diagnostics-v2'
+
 function Sidebar() {
   return (
     <aside className="fixed inset-y-0 left-0 w-64 bg-gray-900 border-r border-gray-800 flex flex-col z-30">
@@ -59,6 +61,7 @@ function Sidebar() {
       </nav>
 
       <div className="px-4 py-4 border-t border-gray-800">
+        <div className="mb-1 text-[10px] text-gray-700 font-mono">{FRONTEND_BUILD_TAG}</div>
         <div className="text-xs text-gray-600">Oracle Lean — Rocket Runner</div>
       </div>
     </aside>

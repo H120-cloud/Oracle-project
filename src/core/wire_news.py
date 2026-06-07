@@ -60,6 +60,7 @@ _DATE_TEXT_RE = re.compile(
     r"\s+(?P<day>\d{1,2}),?\s+(?P<year>\d{4})",
     re.IGNORECASE,
 )
+_TIME_TEXT_RE = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b|\b\d{1,2}\s*(?:AM|PM)\b", re.IGNORECASE)
 
 
 def _feed_urls_for(source: str) -> list[str]:
@@ -98,6 +99,13 @@ def _parse_timestamp(text: str) -> Optional[datetime]:
     return dt.replace(tzinfo=timezone.utc)
 
 
+def _parse_timestamp_with_confidence(text: str) -> tuple[Optional[datetime], str]:
+    parsed = _parse_timestamp(text)
+    if parsed is None:
+        return None, "UNKNOWN"
+    return parsed, "HIGH" if _TIME_TEXT_RE.search(text or "") else "LOW"
+
+
 def _quick_sentiment(text: str) -> str:
     lower = text.lower()
     bullish = any(k in lower for k in ("award", "contract", "approval", "partnership", "acquisition", "launch", "agreement"))
@@ -119,13 +127,18 @@ def _item_text(item) -> str:
 
 
 def _item_timestamp(item) -> Optional[datetime]:
+    timestamp, _confidence = _item_timestamp_with_confidence(item)
+    return timestamp
+
+
+def _item_timestamp_with_confidence(item) -> tuple[Optional[datetime], str]:
     for tag in _DATE_ATTRS:
         found = item.find(tag)
         if found:
-            parsed = _parse_timestamp(found.get_text(" ", strip=True))
+            parsed, confidence = _parse_timestamp_with_confidence(found.get_text(" ", strip=True))
             if parsed:
-                return parsed
-    return None
+                return parsed, confidence
+    return None, "UNKNOWN"
 
 
 def _item_url(item, base_url: str) -> str:
@@ -163,13 +176,19 @@ def parse_wire_feed_html(
         tickers = extract_tickers(text, url=item_url, include_plain_parens=True)
         if not tickers:
             continue
-        timestamp = _item_timestamp(node) or _parse_timestamp(text)
+        if node.name in {"item", "entry"}:
+            timestamp, timestamp_confidence = _item_timestamp_with_confidence(node)
+            if timestamp is None:
+                timestamp, timestamp_confidence = _parse_timestamp_with_confidence(text)
+        else:
+            timestamp, timestamp_confidence = _parse_timestamp_with_confidence(text)
         items.append(
             FinvizNewsItem(
                 headline=text[:400],
                 source=source,
                 url=item_url,
                 timestamp=timestamp,
+                timestamp_confidence=timestamp_confidence,
                 tickers=tickers,
                 category="news",
                 sentiment=_quick_sentiment(text),

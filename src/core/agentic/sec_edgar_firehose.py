@@ -87,7 +87,7 @@ def build_sec_event_headline(filing: Dict[str, Any], content_text: str = "") -> 
         ticker=filing.get("ticker") or "",
         cik=filing.get("cik"),
         filing_type=FilingType.EIGHT_K if str(form).upper() == "8-K" else FilingType.UNKNOWN,
-        filing_date=filing.get("published_at") or datetime.now(timezone.utc),
+        filing_date=filing.get("published_at") or datetime.min.replace(tzinfo=timezone.utc),
         title=fallback,
         summary=text[:1000],
         url=filing.get("url"),
@@ -161,17 +161,17 @@ async def _load_cik_ticker_map(client: httpx.AsyncClient) -> Dict[str, str]:
     return _CIK_TICKER_MAP
 
 
-def _parse_updated(value: str) -> datetime:
+def _parse_updated(value: str) -> Optional[datetime]:
     """Parse an Atom <updated> ISO timestamp to aware UTC."""
     if not value:
-        return datetime.now(timezone.utc)
+        return None
     try:
         dt = datetime.fromisoformat(value.strip())
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
     except Exception:
-        return datetime.now(timezone.utc)
+        return None
 
 
 async def fetch_current_filings(
@@ -215,6 +215,10 @@ async def fetch_current_filings(
             if not accession or accession in seen_accessions:
                 continue
             published_at = _parse_updated(updated_m.group(1) if updated_m else "")
+            if published_at is None:
+                logger.debug("EDGAR firehose skip %s: missing/invalid updated timestamp", accession)
+                seen_accessions.add(accession)
+                continue
             # On the very first poll we only seed the dedup set — we don't want
             # to fire a burst of alerts for filings that are already old.
             if first_run:

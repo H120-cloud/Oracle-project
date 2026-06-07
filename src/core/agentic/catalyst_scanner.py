@@ -139,10 +139,20 @@ class CatalystScanner:
             for item in all_items:
                 if not item.tickers:
                     continue
+                if item.timestamp is None:
+                    logger.info(
+                        "CatalystScanner: dropping %s headline with missing timestamp: %s",
+                        item.source or "unknown",
+                        item.headline[:160],
+                    )
+                    continue
 
                 cat_type, base_strength = classify_catalyst(item.headline)
-                freshness = compute_catalyst_freshness(
-                    item.timestamp or datetime.now(timezone.utc)
+                timestamp_confidence = (getattr(item, "timestamp_confidence", "HIGH") or "HIGH").upper()
+                freshness = (
+                    compute_catalyst_freshness(item.timestamp)
+                    if timestamp_confidence == "HIGH"
+                    else 0.0
                 )
                 # Boost strength by freshness
                 strength = min(100, base_strength * (0.5 + 0.5 * freshness / 100))
@@ -159,7 +169,7 @@ class CatalystScanner:
                                 headline=item.headline,
                                 source=item.source or "",
                                 url=item.url or "",
-                                discovered_at=item.timestamp or datetime.now(timezone.utc),
+                                discovered_at=item.timestamp,
                                 freshness_minutes=freshness,
                                 strength_score=strength,
                                 sentiment=item.sentiment,
@@ -171,7 +181,7 @@ class CatalystScanner:
                             headline=item.headline,
                             source=item.source or "",
                             url=item.url or "",
-                            discovered_at=item.timestamp or datetime.now(timezone.utc),
+                            discovered_at=item.timestamp,
                             freshness_minutes=freshness,
                             strength_score=strength,
                             sentiment=item.sentiment,

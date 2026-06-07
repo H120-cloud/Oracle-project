@@ -247,7 +247,7 @@ class MissedCatalystLearningEngine:
             catalyst_category=candidate.catalyst_category,
             catalyst_sub_type=candidate.catalyst_sub_type,
             source=candidate.source,
-            news_time=candidate.published_at or datetime.now(timezone.utc),
+            news_time=candidate.published_at or candidate.detected_at,
             detected_time=candidate.detected_at,
             alert_time=candidate.detected_at if alert_sent else None,
             price_at_news=candidate.current_price,

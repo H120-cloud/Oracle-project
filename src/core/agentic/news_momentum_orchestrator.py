@@ -169,8 +169,7 @@ _FAST_PATH_HIGH_IMPACT_CATALYSTS = frozenset({
 _STRONG_POSITIVE_KW = (
     "approves", "approval", "approved", "wins", "won", "secures",
     "secured", "awarded", "awards", "signs", "signed", "launches",
-    "launched", "completes", "completed", "receives", "received",
-    "announces", "announced", "expands", "expanded", "selected",
+    "launched", "completes", "completed", "selected",
     "selects", "chosen", "exclusive", "breakthrough", "first-in-class",
     "milestone", "acquires", "acquired", "merger", "acquisition",
     "partnership", "collaboration", "agreement", "contract",
@@ -186,6 +185,7 @@ _STRONG_POSITIVE_KW = (
     "award", "strategic reset", "strategic review", "strategic plan",
     "cashless warrant", "warrant redemption", "regains compliance",
     "regain compliance", "nasdaq compliance", "listing compliance",
+    "purchase order", "orphan drug", "fast track",
 )
 _HARD_NEGATIVE_KW = (
     "offering", "dilution", "downgrade", "lawsuit", "investigation",
@@ -193,6 +193,7 @@ _HARD_NEGATIVE_KW = (
     "halts", "halted", "withdraws", "withdrawn", "terminates",
     "terminated", "misses", "missed", "decline", "declines",
     "falls", "down", "loss", "losses", "warning", "guides down",
+    "minimum bid", "deficiency notice", "non-compliance", "noncompliance",
 )
 _RETROSPECTIVE_MOVE_RE = re.compile(
     r"("

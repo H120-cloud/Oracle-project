@@ -327,6 +327,36 @@ def test_fast_path_watch_rejects_old_published_headline(monkeypatch):
     assert candidate.fast_path_watch_sent is False
 
 
+def test_generic_investor_presentation_does_not_get_first_mover_boost():
+    orch = _minimal_gate_orchestrator()
+    candidate = _fresh_bullish_candidate("NRN1")
+    candidate.headline = "NRN1 announces investor presentation at upcoming conference"
+    candidate.catalyst_category = CatalystCategory.UNKNOWN
+    candidate.catalyst_sub_type = CatalystSubType.OTHER
+    candidate.news_impact_score = 34.0
+    candidate.expected_return_score = 22.0
+    candidate.continuation_probability = 18.0
+    candidate.multi_day_continuation_score = 12.0
+
+    assert orch._should_send_telegram_impl(candidate, adaptive={}) is False
+    assert getattr(candidate, "_first_mover", False) is False
+
+
+def test_minimum_bid_deficiency_does_not_get_first_mover_boost():
+    orch = _minimal_gate_orchestrator()
+    candidate = _fresh_bullish_candidate("NRN5")
+    candidate.headline = "NRN5 receives Nasdaq minimum bid deficiency notice"
+    candidate.catalyst_category = CatalystCategory.UNKNOWN
+    candidate.catalyst_sub_type = CatalystSubType.OTHER
+    candidate.news_impact_score = 44.0
+    candidate.expected_return_score = 30.0
+    candidate.continuation_probability = 8.0
+    candidate.multi_day_continuation_score = 5.0
+
+    assert orch._should_send_telegram_impl(candidate, adaptive={}) is False
+    assert getattr(candidate, "_first_mover", False) is False
+
+
 def test_process_event_runs_fast_path_before_slow_enrichment(monkeypatch):
     orch = object.__new__(NewsMomentumOrchestrator)
     orch._candidate_by_ticker = {}

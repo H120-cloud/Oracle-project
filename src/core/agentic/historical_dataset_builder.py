@@ -73,19 +73,20 @@ class HistoricalDatasetBuilder:
         **extra: Any,
     ) -> HistoricalCatalystEvent:
         """Add a new historical catalyst event."""
+        data_quality = DataQuality.FULL if timestamp is not None else DataQuality.PARTIAL
         event = HistoricalCatalystEvent(
             ticker=ticker.upper(),
             catalyst_type=catalyst_type,
             catalyst_headline=headline,
             catalyst_source=source,
-            catalyst_timestamp=timestamp or datetime.now(timezone.utc),
+            catalyst_timestamp=timestamp,
             price_at_news=price_at_news,
             float_shares=float_shares,
             market_cap=market_cap,
             is_premarket=is_premarket,
             time_of_day_bucket=time_of_day_bucket,
-            event_date=(timestamp or datetime.now(timezone.utc)).strftime("%Y-%m-%d"),
-            data_quality=DataQuality.FULL,
+            event_date=timestamp.strftime("%Y-%m-%d") if timestamp else "",
+            data_quality=data_quality,
             **extra,
         )
         self._events.append(event)

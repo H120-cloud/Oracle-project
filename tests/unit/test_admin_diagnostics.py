@@ -222,7 +222,29 @@ def test_outbox_status_filter_and_summary(tmp_path):
     assert s["pending"] == 1
     assert s["dead_letter"] == 1
     assert s["total"] == 4
+    assert s["retrying"] == 1
     assert s["success_rate"] == pytest.approx(0.25)
+
+
+def test_in_range_rejects_invalid_date_strings():
+    assert ad._in_range("2026-06-05T12:00:00+00:00", "not-a-date", None) is False
+    assert ad._in_range("2026-06-05T12:00:00+00:00", None, "also-bad") is False
+    assert ad._in_range("2026-06-05T12:00:00+00:00", "bad", "worse") is False
+    # valid dates still work
+    assert ad._in_range("2026-06-05T12:00:00+00:00", "2026-06-01T00:00:00+00:00", "2026-06-10T00:00:00+00:00") is True
+
+
+def test_unprocessed_item_marked_incomplete(tmp_path):
+    row = _lat_row("UNPROC", sent=False, blocked=None)
+    # Remove gate/scored/telegram timestamps so total is None
+    row.pop("scored_at", None)
+    row.pop("gate_decision_at", None)
+    row.pop("telegram_sent_at", None)
+    row.pop("telegram_enqueue_at", None)
+    p = _write_jsonl(tmp_path / "lat.jsonl", [row])
+    out = ad.read_news_latency(path=p)
+    assert out["items"][0]["status"] == "incomplete"
+    assert out["items"][0]["is_delayed"] is False
 
 
 # ── Optional endpoints reuse the latency reader ────────────────────────────

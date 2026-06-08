@@ -47,6 +47,9 @@ _TELEGRAM_TAG_RE = re.compile(
 def _sanitize_html(text: str) -> str:
     """
     Sanitize a Telegram HTML message while preserving supported tags.
+
+    Escapes bare `<`, `>`, and `&` characters, but avoids double-escaping
+    existing HTML entities (e.g. `&lt;` → `&amp;lt;`).
     """
     if not text:
         return text
@@ -54,11 +57,15 @@ def _sanitize_html(text: str) -> str:
     last_end = 0
     for m in _TELEGRAM_TAG_RE.finditer(text):
         chunk = text[last_end : m.start()]
-        chunk = chunk.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # Escape < and > first, then & only when it's not the start of an entity.
+        chunk = chunk.replace("<", "&lt;").replace(">", "&gt;")
+        chunk = re.sub(r"&(?![a-zA-Z#][a-zA-Z0-9]*;)", "&amp;", chunk)
         parts.append(chunk)
         parts.append(m.group(0))
         last_end = m.end()
-    tail = text[last_end:].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    tail = text[last_end:]
+    tail = tail.replace("<", "&lt;").replace(">", "&gt;")
+    tail = re.sub(r"&(?![a-zA-Z#][a-zA-Z0-9]*;)", "&amp;", tail)
     parts.append(tail)
     return "".join(parts)
 

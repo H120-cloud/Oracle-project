@@ -43,7 +43,7 @@ class FinvizScanner:
         try:
             path = os.path.normpath(self._BAD_TICKERS_PATH)
             if os.path.exists(path):
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     self._bad_tickers = set(json.load(f))
                 logger.debug("FinvizScanner: loaded %d bad tickers", len(self._bad_tickers))
         except Exception as exc:

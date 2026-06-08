@@ -35,5 +35,31 @@ docs/
 *.md
 !README.md
 
+# Tests / dev scripts (not needed at runtime)
+tests/
+scripts/
+archive/
+.remember/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Misc data artifacts
+*.bak
+*.jsonl
+*.log
+*.parquet
+*.joblib
+
+# Local tooling
+*.ps1
+*.bat
+start_oracle.bat
+run_backfill.ps1
+
 # Old project copy
 Oracle-project-original/

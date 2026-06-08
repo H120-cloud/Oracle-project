@@ -282,6 +282,6 @@ class OutcomeSimulator:
                 if not after_bars.empty:
                     prices[label] = float(after_bars["Close"].iloc[0])
             except Exception:
-                pass
+                logger.debug("Outcome simulator price lookup skipped")
 
         return prices

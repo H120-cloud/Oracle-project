@@ -5,6 +5,7 @@ FastAPI application entry point (V5).
 """
 
 import os
+import sys
 from dotenv import load_dotenv
 
 # Load .env before any module imports that might read env vars
@@ -18,7 +19,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
-from datetime import timezone, timezone, timedelta
+from datetime import timezone, timedelta
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket
@@ -45,17 +46,33 @@ from src.services.telegram_service import send_telegram_alert, telegram_outbox_s
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+# Split streams so container log collectors (e.g. Railway) classify logs
+# correctly: INFO/DEBUG → stdout, WARNING and above → stderr. basicConfig alone
+# defaults everything to stderr, which makes every INFO line show up as an
+# "error" in the dashboard.
+_log_formatter = logging.Formatter(
+    "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+_stdout_handler = logging.StreamHandler(sys.stdout)
+_stdout_handler.setLevel(logging.DEBUG)
+_stdout_handler.addFilter(lambda record: record.levelno < logging.WARNING)
+_stdout_handler.setFormatter(_log_formatter)
+_stderr_handler = logging.StreamHandler(sys.stderr)
+_stderr_handler.setLevel(logging.WARNING)
+_stderr_handler.setFormatter(_log_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[_stdout_handler, _stderr_handler])
 logger = logging.getLogger("oracle")
 
 # Suppress noisy loggers
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
+# ── Startup readiness (for Railway health checks) ────────────────────────────
+_startup_ready = False
 
 
 def _log_lean_mode_status(settings) -> None:
@@ -70,6 +87,49 @@ def _log_lean_mode_status(settings) -> None:
 # ── Lifespan ─────────────────────────────────────────────────────────────────
 
 SIMULATOR_INTERVAL_SECONDS = 1800  # Run every 30 minutes
+
+
+async def _init_news_momentum_async():
+    """Heavy init that runs in the background so lifespan yields fast.
+
+    NewsMomentumOrchestrator loads ~15 JSON files and 2 ML models via joblib,
+    which can block the event loop for 10-30s on Railway cold starts.
+    Running it off the main loop lets /health respond immediately.
+    """
+    global _news_momentum_orch, _alpaca_news_stream, _startup_ready
+    try:
+        from src.api.routes.news_momentum import set_orchestrator
+        _news_momentum_orch = await asyncio.to_thread(NewsMomentumOrchestrator)
+        set_orchestrator(_news_momentum_orch)
+        logger.info("News Momentum Intelligence System initialized")
+    except Exception as exc:
+        logger.warning("NewsMomentum init failed: %s", exc)
+        return
+
+    # SEC Intelligence wiring (depends on orchestrator)
+    try:
+        from src.api.routes.sec_intelligence import set_orchestrator as _set_sec_orch
+        if _news_momentum_orch is not None and _news_momentum_orch.get_sec_intelligence() is not None:
+            _set_sec_orch(_news_momentum_orch.get_sec_intelligence())
+            logger.info("SEC Filing Intelligence orchestrator wired to API (V23)")
+    except Exception as exc:
+        logger.warning("SEC Intelligence wiring failed: %s", exc)
+
+    # Alpaca real-time news stream (depends on orchestrator)
+    try:
+        if _news_momentum_orch is not None:
+            from src.services.alpaca_news_stream import AlpacaNewsStream
+            _alpaca_news_stream = AlpacaNewsStream(on_news=_handle_streamed_news)
+            if _alpaca_news_stream.start(main_loop=asyncio.get_running_loop()):
+                logger.info("Alpaca real-time news stream started (event-driven alerts)")
+            else:
+                _alpaca_news_stream = None
+                logger.info("Alpaca news stream not started (no creds/SDK) — RSS polling only")
+    except Exception as exc:
+        logger.warning("Alpaca news stream init failed: %s", exc)
+
+    _startup_ready = True
+    logger.info("Oracle startup ready — all heavy init completed")
 
 
 async def _outcome_simulator_loop():
@@ -253,8 +313,12 @@ async def _pre_news_scan_loop():
                             alert_type="pre_news",
                             priority=3,
                         )
+                        # Always mark as alerted — even when the direct send
+                        # fails and the message is enqueued for outbox retry.
+                        # Otherwise the next scan recreates the anomaly with
+                        # alert_sent=False and spams the same ticker again.
+                        detector.mark_alert_sent(anomaly.ticker)
                         if sent:
-                            detector.mark_alert_sent(anomaly.ticker)
                             logger.info("PreNews Telegram alert sent for %s (score=%s)", anomaly.ticker, anomaly.pre_news_suspicion_score)
                             validation_tracker.record_alert(anomaly.ticker)
                         else:
@@ -343,8 +407,10 @@ async def _pre_news_scan_loop():
                         alert_type="pre_news_confirmed",
                         priority=4,
                     )
+                    # Always mark as sent so update_news_status stops returning
+                    # this anomaly as newly_confirmed on every subsequent scan.
+                    detector.mark_news_confirmed_alert_sent(anomaly.ticker)
                     if sent:
-                        detector.mark_news_confirmed_alert_sent(anomaly.ticker)
                         logger.info(
                             "PreNews news-confirmation alert sent for %s", anomaly.ticker
                         )
@@ -884,7 +950,7 @@ async def _handle_streamed_news(items) -> None:
 
         news_events = []
         for item in items:
-            if not item.tickers or not item.headline:
+            if not getattr(item, "tickers", None) or not getattr(item, "headline", None):
                 continue
             ts = item.timestamp
             # Drop items with no parseable timestamp instead of fabricating
@@ -892,7 +958,7 @@ async def _handle_streamed_news(items) -> None:
             # (e.g. a day-old Finviz headline) gets surfaced as a live catalyst.
             if ts is None:
                 continue
-            ts_utc = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+            ts_utc = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
             if cutoff is not None and ts_utc < cutoff:
                 continue
             raw_text = _news_item_classification_text(item)
@@ -1042,7 +1108,7 @@ async def _news_momentum_scan_loop():
                 news_events = []
                 from src.core.agentic.news_momentum_catalyst_classifier import classify_headline
                 from src.core.agentic.news_momentum_models import NewsEvent, NewsSource
-                from src.core.agentic.news_momentum_utils import deduplicate_news_items
+                from src.core.agentic.news_momentum_utils import deduplicate_news_items, _normalize_headline
 
                 # Lazily initialize scrapers once
                 if _finviz_scraper is None:
@@ -1124,13 +1190,13 @@ async def _news_momentum_scan_loop():
                     if _news_cutoff is None or ts is None:
                         return False
                     try:
-                        ts_utc = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+                        ts_utc = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
                         return ts_utc < _news_cutoff
                     except Exception:
                         return False
 
                 for item in all_items:
-                    if not item.tickers:
+                    if not getattr(item, "tickers", None):
                         _untickered_news_count += 1
                         _source_health.record_untickered_headline(getattr(item, "source", "unknown") or "unknown")
                         continue
@@ -1245,8 +1311,10 @@ async def _news_momentum_scan_loop():
                         _source_health.record_parse_error("FinvizTickerUniverse", now=datetime.now(timezone.utc))
                         logger.warning("NewsMomentum: Finviz under-$2 ticker discovery failed: %s", exc)
 
-                    # Already seen headlines from global feed so we don't dup
-                    seen_headlines = {e.headline.lower().strip() for e in news_events}
+                    # Already seen (ticker, normalized_headline) from global feed
+                    seen_keys = {
+                        (e.ticker, _normalize_headline(e.headline)) for e in news_events
+                    }
                     enrichment_budget = float(os.environ.get("FINVIZ_TICKER_ENRICHMENT_BUDGET_SECONDS", "6") or 6)
                     enrichment_deadline = asyncio.get_running_loop().time() + max(0.5, enrichment_budget)
 
@@ -1266,14 +1334,18 @@ async def _news_momentum_scan_loop():
                                     setattr(fetched_item, "fetched_at", ticker_fetched_at)
                                     setattr(fetched_item, "parsed_at", ticker_fetched_at)
                                 except Exception:
-                                    pass
+                                    logger.debug("Ticker news setattr best-effort skipped")
                             for item in ticker_items:
-                                if not item.tickers:
+                                tickers = getattr(item, "tickers", None) or []
+                                if not tickers:
                                     continue
-                                h_norm = item.headline.lower().strip()
-                                if h_norm in seen_headlines:
+                                h_norm = _normalize_headline(item.headline)
+                                # Skip only if every ticker in this item is already known;
+                                # preserves the item if at least one ticker is new.
+                                if all((t, h_norm) in seen_keys for t in tickers):
                                     continue
-                                seen_headlines.add(h_norm)
+                                for t in tickers:
+                                    seen_keys.add((t, h_norm))
                                 if item.timestamp is None:
                                     _missing_ts_count += 1
                                     _source_health.record_missing_timestamp("FinvizTickerNews")
@@ -1285,7 +1357,7 @@ async def _news_momentum_scan_loop():
                                 raw_text = _news_item_classification_text(item)
                                 classified_at = datetime.now(timezone.utc)
                                 cat, sub, neg, vague = classify_headline(raw_text or item.headline)
-                                for t in item.tickers:
+                                for t in tickers:
                                     ticker_news_events.append(NewsEvent(
                                         ticker=t,
                                         headline=item.headline,
@@ -1349,11 +1421,14 @@ async def _news_momentum_scan_loop():
             )
             for warning in _source_health.evaluate(now=datetime.now(timezone.utc)):
                 logger.warning("News source health: %s", warning)
-                asyncio.create_task(send_telegram_alert(
-                    f"Oracle source health warning: {warning}",
-                    alert_type="source_health",
-                    priority=1,
-                ))
+                try:
+                    await send_telegram_alert(
+                        f"Oracle source health warning: {warning}",
+                        alert_type="source_health",
+                        priority=1,
+                    )
+                except Exception as exc:
+                    logger.warning("NewsMomentum: source health alert failed: %s", exc)
 
         await asyncio.sleep(interval)
 
@@ -1579,8 +1654,13 @@ async def lifespan(app: FastAPI):
         logger.warning("Baseline seeding skipped: %s", exc)
 
     # Create tables if they don't exist (preserves data across restarts)
-    Base.metadata.create_all(bind=engine, checkfirst=True)
-    logger.info("Database tables ensured")
+    # Run in a thread so the event loop stays unblocked; on Railway this lets
+    # /health respond while SQLite/Postgres tables are being created.
+    try:
+        await asyncio.to_thread(Base.metadata.create_all, bind=engine, checkfirst=True)
+        logger.info("Database tables ensured")
+    except Exception as exc:
+        logger.error("Database table creation failed: %s", exc)
 
     sim_task = None
     if settings.legacy_outcome_simulator_enabled:
@@ -1616,41 +1696,6 @@ async def lifespan(app: FastAPI):
     _spawn(_delayed_start(telegram_command_polling_loop, 1.0, "Telegram command polling"))
     _spawn(_delayed_start(telegram_outbox_sender_loop, 2.5, "Telegram outbox sender"))
 
-    # Startup: initialize News Momentum Orchestrator
-    global _news_momentum_orch
-    try:
-        from src.api.routes.news_momentum import set_orchestrator
-        _news_momentum_orch = NewsMomentumOrchestrator()
-        set_orchestrator(_news_momentum_orch)
-        logger.info("News Momentum Intelligence System initialized")
-    except Exception as exc:
-        logger.warning("NewsMomentum init failed: %s", exc)
-
-    # Startup: share SEC Intelligence orchestrator instance with the API
-    # so /api/v1/sec-intelligence and the momentum engine use the same state.
-    try:
-        from src.api.routes.sec_intelligence import set_orchestrator as _set_sec_orch
-        if _news_momentum_orch is not None and _news_momentum_orch.get_sec_intelligence() is not None:
-            _set_sec_orch(_news_momentum_orch.get_sec_intelligence())
-            logger.info("SEC Filing Intelligence orchestrator wired to API (V23)")
-    except Exception as exc:
-        logger.warning("SEC Intelligence wiring failed: %s", exc)
-
-    # Start real-time Alpaca news WebSocket — event-driven alerting that fires
-    # within seconds of the wire, instead of waiting on the periodic RSS loop.
-    global _alpaca_news_stream
-    try:
-        if _news_momentum_orch is not None:
-            from src.services.alpaca_news_stream import AlpacaNewsStream
-            _alpaca_news_stream = AlpacaNewsStream(on_news=_handle_streamed_news)
-            if _alpaca_news_stream.start(main_loop=asyncio.get_running_loop()):
-                logger.info("Alpaca real-time news stream started (event-driven alerts)")
-            else:
-                _alpaca_news_stream = None
-                logger.info("Alpaca news stream not started (no creds/SDK) — RSS polling only")
-    except Exception as exc:
-        logger.warning("Alpaca news stream init failed: %s", exc)
-
     # Start news momentum scan loop (+6s — after all other loops)
     _spawn(_delayed_start(_news_momentum_scan_loop, 6.0, "News momentum scan loop"))
 
@@ -1668,6 +1713,12 @@ async def lifespan(app: FastAPI):
     # Start ML retrain loop (weekly Sunday 02:00 UTC)
     _spawn(_news_momentum_ml_retrain_loop(), "news_momentum_ml_retrain")
     logger.info("News momentum ML retrain loop scheduled (weekly Sunday 02:00 UTC)")
+
+    # Heavy init (NewsMomentumOrchestrator, SEC wiring, Alpaca stream) runs
+    # in the background so lifespan yields fast. Railway's /health check gets
+    # a response immediately instead of timing out during cold start.
+    _spawn(_init_news_momentum_async(), "news_momentum_init")
+    logger.info("Oracle V5 startup complete — heavy init running in background")
 
     # DISABLED: SEC Intelligence hourly scan loop (not actively used)
     # asyncio.create_task(_sec_intelligence_scan_loop())

@@ -192,7 +192,8 @@ class StockTwitsScraper:
                     sym.get("symbol", "").upper() == ticker.upper()
                     for sym in symbols
                 )
-        except Exception:
+        except Exception as exc:
+            logger.debug("StockTwits search_symbol failed: %s", exc)
             return False
 
 

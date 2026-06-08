@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -22,12 +23,23 @@ import httpx
 
 from src.config import get_settings
 from src.services.telegram_service import _get_config, TELEGRAM_API, TIMEOUT
+from src.services.telegram_outbox import enqueue_alert
 
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = 3.0  # seconds between polls
 ANALYSIS_TIMEOUT = 30.0  # seconds for analysis to complete
 from src.utils.data_paths import AGENTIC_DATA_DIR
+
+# Prevent fire-and-forget tasks from being garbage-collected mid-flight.
+_command_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(task: asyncio.Task) -> asyncio.Task:
+    """Register a background task and auto-remove on completion."""
+    _command_tasks.add(task)
+    task.add_done_callback(_command_tasks.discard)
+    return task
 
 _settings = get_settings()
 LEGACY_TELEGRAM_COMMANDS_ENABLED = not _settings.oracle_lean_mode
@@ -65,17 +77,31 @@ async def send_telegram_message(chat_id: str, text: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.post(url, json=payload)
-            if resp.status_code != 200:
-                # Don't swallow silently — the Telegram body usually tells us
-                # exactly why parsing failed (entity, offset, etc.).
-                logger.warning(
-                    "Telegram sendMessage %s: %s",
-                    resp.status_code, resp.text[:200],
-                )
-            return resp.status_code == 200
+            if resp.status_code == 200:
+                return True
+            # Don't swallow silently — the Telegram body usually tells us
+            # exactly why parsing failed (entity, offset, etc.).
+            logger.warning(
+                "Telegram sendMessage %s: %s",
+                resp.status_code, resp.text[:200],
+            )
     except Exception as e:
         logger.warning("Failed to send Telegram message: %s", e)
-        return False
+
+    # Persist to durable outbox for background retry
+    try:
+        import hashlib
+        alert_id = "cmd:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+        enqueue_alert(
+            alert_id=alert_id,
+            message=text,
+            ticker="CMD",
+            alert_type="telegram_command_response",
+            last_error=f"sendMessage failed: {resp.status_code if 'resp' in dir() else 'exception'}",
+        )
+    except Exception as exc:
+        logger.debug("Command response outbox enqueue best-effort skipped: %s", exc)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +562,10 @@ async def _handle_watch_command(chat_id: str, ticker: str, preference: Optional[
     from src.db.repositories import WatchlistRepository
 
     ticker = ticker.upper()
+    if not re.match(r'^[A-Z]{1,5}$', ticker):
+        await send_telegram_message(chat_id, f"Invalid ticker format: <b>{ticker}</b>")
+        return
+
     db = SessionLocal()
     try:
         repo = WatchlistRepository(db)
@@ -646,57 +676,57 @@ async def telegram_command_polling_loop():
                     if cmd == "/analysis":
                         if len(parts) >= 2:
                             ticker = parts[1]
-                            asyncio.create_task(_handle_analysis_command(msg_chat_id, ticker))
+                            _spawn(asyncio.create_task(_handle_analysis_command(msg_chat_id, ticker)))
                         else:
-                            asyncio.create_task(
+                            _spawn(asyncio.create_task(
                                 send_telegram_message(
                                     msg_chat_id,
                                     "Usage: /analysis TICKER\nExample: /analysis AAPL",
                                 )
-                            )
+                            ))
                     elif cmd == "/orderflow":
                         if len(parts) >= 2:
                             ticker = parts[1]
-                            asyncio.create_task(_handle_orderflow_command(msg_chat_id, ticker))
+                            _spawn(asyncio.create_task(_handle_orderflow_command(msg_chat_id, ticker)))
                         else:
-                            asyncio.create_task(
+                            _spawn(asyncio.create_task(
                                 send_telegram_message(
                                     msg_chat_id,
                                     "Usage: /orderflow TICKER\nExample: /orderflow AAPL",
                                 )
-                            )
+                            ))
                     elif cmd == "/watch":
                         if len(parts) >= 2:
                             ticker = parts[1]
                             preference = parts[2] if len(parts) >= 3 else None
-                            asyncio.create_task(_handle_watch_command(msg_chat_id, ticker, preference))
+                            _spawn(asyncio.create_task(_handle_watch_command(msg_chat_id, ticker, preference)))
                         else:
-                            asyncio.create_task(
+                            _spawn(asyncio.create_task(
                                 send_telegram_message(
                                     msg_chat_id,
                                     "Usage: /watch TICKER [bullish|bearish]\nExample: /watch AAPL bullish",
                                 )
-                            )
+                            ))
                     elif cmd == "/status":
                         if len(parts) >= 2:
                             ticker = parts[1]
-                            asyncio.create_task(_handle_status_command(msg_chat_id, ticker))
+                            _spawn(asyncio.create_task(_handle_status_command(msg_chat_id, ticker)))
                         else:
-                            asyncio.create_task(
+                            _spawn(asyncio.create_task(
                                 send_telegram_message(
                                     msg_chat_id,
                                     "Usage: /status TICKER\nExample: /status STI",
                                 )
-                            )
+                            ))
                     elif cmd == "/help":
-                        asyncio.create_task(_handle_help(msg_chat_id))
+                        _spawn(asyncio.create_task(_handle_help(msg_chat_id)))
                     elif cmd.startswith("/"):
-                        asyncio.create_task(
+                        _spawn(asyncio.create_task(
                             send_telegram_message(
                                 msg_chat_id,
                                 "Unknown command. Try /help",
                             )
-                        )
+                        ))
 
             except Exception as e:
                 import traceback

@@ -498,4 +498,4 @@ class IntelligenceEngine:
         try:
             self.news_engine.close()
         except Exception:
-            pass
+            logger.debug("Intelligence engine cleanup skipped")

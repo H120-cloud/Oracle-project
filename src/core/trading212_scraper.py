@@ -10,6 +10,7 @@ Note: Trading 212 doesn't have an official public API, so this uses
 web scraping with fallbacks to cached/simulated data if blocked.
 """
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -117,7 +118,6 @@ class Trading212Scraper:
 
         if match:
             try:
-                import json
                 data = json.loads(match.group(1))
 
                 # Navigate to stocks data (structure varies)
@@ -137,7 +137,7 @@ class Trading212Scraper:
                         ))
 
             except json.JSONDecodeError:
-                pass
+                logger.debug("Trading212 JSON parse failed")
 
         return stocks
 
@@ -160,7 +160,7 @@ class Trading212Scraper:
                 try:
                     change_pct = float(change_text.replace("%", "").replace(",", ""))
                 except ValueError:
-                    pass
+                    logger.debug("Trading212 change parse failed: %s", change_text)
 
                 if ticker and re.match(r'^[A-Z]{1,5}$', ticker):
                     stocks.append(Trading212Stock(
@@ -244,11 +244,16 @@ class Trading212Scraper:
                     vol_elem = row.find("td", attrs={"aria-label": re.compile(r"Volume")})
                     volume = 0
                     if vol_elem:
-                        vol_text = vol_elem.get_text(strip=True).replace("M", "000000").replace("K", "000").replace(",", "")
+                        vol_text = vol_elem.get_text(strip=True).replace(",", "")
                         try:
-                            volume = int(float(vol_text))
+                            if vol_text.endswith("M"):
+                                volume = int(float(vol_text[:-1]) * 1_000_000)
+                            elif vol_text.endswith("K"):
+                                volume = int(float(vol_text[:-1]) * 1_000)
+                            else:
+                                volume = int(float(vol_text))
                         except ValueError:
-                            pass
+                            logger.debug("Could not parse volume text: %s", vol_text)
 
                     if ticker:
                         stocks.append(Trading212Stock(

@@ -48,7 +48,7 @@ def _load_anomalies() -> dict[str, dict]:
         return {}
 
     try:
-        with open(_ANOMALIES_FILE) as f:
+        with open(_ANOMALIES_FILE, encoding="utf-8") as f:
             data = json.load(f)
         # Data may be a list or dict depending on version
         if isinstance(data, list):

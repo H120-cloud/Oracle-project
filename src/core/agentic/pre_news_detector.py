@@ -389,10 +389,13 @@ def _check_news_status(
         ts = item.timestamp
         if ts is None:
             continue
-        if ts >= cutoff_2h:
-            if best_ts is None or ts > best_ts:
+        # Normalize to UTC-aware so naive scraper timestamps don't crash
+        # the comparison against the UTC-aware cutoff.
+        ts_utc = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+        if ts_utc >= cutoff_2h:
+            if best_ts is None or ts_utc > best_ts:
                 best_headline = item.headline
-                best_ts = ts
+                best_ts = ts_utc
                 best_source = getattr(item, "source", "finviz_global")
 
     if best_headline and best_ts:
@@ -413,11 +416,12 @@ def _check_news_status(
             ts = item.timestamp
             if ts is None:
                 continue
-            if ts < cutoff_recent:
+            ts_utc = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+            if ts_utc < cutoff_recent:
                 continue
-            if best_ts is None or ts > best_ts:
+            if best_ts is None or ts_utc > best_ts:
                 best_headline = item.headline
-                best_ts = ts
+                best_ts = ts_utc
                 best_source = "finviz_ticker"
     except Exception as exc:
         logger.debug("Per-ticker news fallback failed for %s: %s", ticker, exc)
@@ -873,7 +877,9 @@ class PreNewsDetector:
         # Upgrade the top flagged anomalies with Polygon extended-hours data.
         # The bulk loop above ran on yfinance (free-tier safe); only the few
         # highest-suspicion names get the accurate Polygon pre/after-hours bars.
-        results = self._enrich_top_anomalies_with_polygon(results, news_items=news_items)
+        results = await asyncio.to_thread(
+            self._enrich_top_anomalies_with_polygon, results, news_items=news_items
+        )
 
         # Sort by suspicion score descending
         results.sort(key=lambda a: a.pre_news_suspicion_score, reverse=True)
@@ -1631,7 +1637,7 @@ class PreNewsDetector:
                     continue
                 ts = getattr(item, "timestamp", None)
                 if ts is not None:
-                    ts_utc = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+                    ts_utc = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
                     if ts_utc < cutoff:
                         continue
                 for ticker in getattr(item, "tickers", []) or []:
@@ -1651,7 +1657,7 @@ class PreNewsDetector:
                     continue
                 ts = getattr(item, "timestamp", None)
                 if ts is not None:
-                    ts_utc = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+                    ts_utc = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
                     if ts_utc < cutoff:
                         continue
                 for ticker in getattr(item, "tickers", []) or []:
@@ -1671,7 +1677,7 @@ class PreNewsDetector:
                     continue
                 ts = getattr(item, "timestamp", None)
                 if ts is not None:
-                    ts_utc = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+                    ts_utc = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
                     if ts_utc < cutoff:
                         continue
                 source = getattr(item, "source", "wire") or "wire"

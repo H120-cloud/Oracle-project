@@ -235,10 +235,11 @@ def test_send_telegram_success_survives_learning_record_failure(monkeypatch):
     assert "SPRC" in orch._alert_cooldown
 
 
-def test_send_telegram_failure_does_not_set_normal_alert_cooldown(monkeypatch):
+def test_send_telegram_failure_still_sets_alert_cooldown_to_prevent_spam(monkeypatch):
     orch = object.__new__(NewsMomentumOrchestrator)
     orch._alert_cooldown = {}
     orch._headline_alert_cooldown = {}
+    orch._alert_memory = {}
     orch._telegram_learning = type(
         "TelegramLearning",
         (),
@@ -274,10 +275,13 @@ def test_send_telegram_failure_does_not_set_normal_alert_cooldown(monkeypatch):
     candidate = _candidate("PEND")
 
     assert asyncio.run(orch._send_telegram_alert(candidate)) is False
+    # telegram_sent stays False so the outbox can still retry / report status
     assert candidate.telegram_sent is False
-    assert "PEND" not in orch._alert_cooldown
-    assert "PEND:hash" not in orch._headline_alert_cooldown
-    assert saved == []
+    # BUT cooldowns MUST be recorded immediately so the next scan doesn't
+    # enqueue another duplicate while the outbox is still retrying.
+    assert "PEND" in orch._alert_cooldown
+    assert "PEND:hash" in orch._headline_alert_cooldown
+    assert saved == ["ticker", "headline"]
 
 
 def test_fast_path_watch_sends_fresh_high_impact_before_enrichment(monkeypatch):

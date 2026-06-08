@@ -402,11 +402,16 @@ class DiscoveryEngine:
                     vol_elem = row.find("td", attrs={"aria-label": re.compile(r"Volume")})
                     volume = 0
                     if vol_elem:
-                        vol_text = vol_elem.get_text(strip=True).replace("M", "000000").replace("K", "000").replace(",", "")
+                        vol_text = vol_elem.get_text(strip=True).replace(",", "")
                         try:
-                            volume = int(float(vol_text))
+                            if vol_text.endswith("M"):
+                                volume = int(float(vol_text[:-1]) * 1_000_000)
+                            elif vol_text.endswith("K"):
+                                volume = int(float(vol_text[:-1]) * 1_000)
+                            else:
+                                volume = int(float(vol_text))
                         except ValueError:
-                            pass
+                            logger.debug("Could not parse volume text: %s", vol_text)
 
                     if ticker and re.match(r'^[A-Z]{1,5}$', ticker):
                         discovered.append(DiscoveredTicker(

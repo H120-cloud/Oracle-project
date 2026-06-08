@@ -147,7 +147,10 @@ async def list_candidates(
     if min_probability > 0:
         candidates = [c for c in candidates if c.final_probability >= min_probability]
     if state:
-        candidates = [c for c in candidates if c.momentum.state.value == state]
+        candidates = [
+            c for c in candidates
+            if c.momentum and c.momentum.state and c.momentum.state.value == state
+        ]
 
     candidates.sort(key=lambda c: c.final_probability, reverse=True)
 

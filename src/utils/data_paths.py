@@ -68,6 +68,20 @@ def _is_truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _is_mounted_volume(path: str | Path) -> bool:
+    """Heuristic: check if *path* appears as a mount point in /proc/mounts."""
+    try:
+        target = str(path)
+        with open("/proc/mounts", "r") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) > 1 and parts[1] == target:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def verify_persistent_data_dir() -> None:
     """Fail loudly if running on Railway without a persistent data directory.
 
@@ -94,17 +108,13 @@ def verify_persistent_data_dir() -> None:
 
     data_dir = agentic_data_dir().resolve()
     mount = os.environ.get(_RAILWAY_VOLUME_ENV)
-    if not mount:
-        raise RuntimeError(
-            "Railway deployment detected but no persistent volume is attached "
-            f"({_RAILWAY_VOLUME_ENV} is unset). Agentic state at {data_dir} would "
-            "be lost on every redeploy/restart. Attach a Railway volume mounted at "
-            "/app/data and set AGENTIC_DATA_DIR=/app/data/agentic. To intentionally "
-            "run without persistence, set ORACLE_ALLOW_EPHEMERAL=true."
-        )
 
-    mount_dir = Path(mount).resolve()
-    if not (data_dir == mount_dir or mount_dir in data_dir.parents):
+    # Primary check: Railway injects RAILWAY_VOLUME_MOUNT_PATH when a volume is attached.
+    if mount:
+        mount_dir = Path(mount).resolve()
+        if data_dir == mount_dir or mount_dir in data_dir.parents:
+            logger.info("Persistent agentic data dir verified: %s (volume %s)", data_dir, mount_dir)
+            return
         raise RuntimeError(
             f"Agentic data dir {data_dir} is not under the Railway volume "
             f"{mount_dir}; state would be lost on restart. Set "
@@ -112,7 +122,25 @@ def verify_persistent_data_dir() -> None:
             "(e.g. /app/data/agentic). To bypass, set ORACLE_ALLOW_EPHEMERAL=true."
         )
 
-    logger.info("Persistent agentic data dir verified: %s (volume %s)", data_dir, mount_dir)
+    # Fallback: Railway sometimes mounts the volume without injecting the env var.
+    # If the expected mount point exists and is listed in /proc/mounts, allow it.
+    expected_mount = Path("/app/data")
+    if expected_mount.exists() and _is_mounted_volume(expected_mount):
+        logger.warning(
+            "%s is unset but /app/data appears to be a mounted volume. "
+            "Allowing startup — agentic state should persist.",
+            _RAILWAY_VOLUME_ENV,
+        )
+        return
+
+    raise RuntimeError(
+        "Railway deployment detected but no persistent volume is attached "
+        f"({_RAILWAY_VOLUME_ENV} is unset and /app/data is not a mount point). "
+        "Agentic state would be lost on every redeploy/restart. "
+        "Attach a Railway volume mounted at /app/data and set "
+        "AGENTIC_DATA_DIR=/app/data/agentic. To intentionally run without "
+        "persistence, set ORACLE_ALLOW_EPHEMERAL=true."
+    )
 
 
 def default_seed_dir() -> Path:

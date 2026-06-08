@@ -11,6 +11,7 @@ These tests prove:
 from __future__ import annotations
 
 import importlib
+import os
 import re
 from pathlib import Path
 
@@ -159,6 +160,18 @@ def test_verify_guard_allows_explicit_ephemeral_escape(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENTIC_DATA_DIR", str(tmp_path / "ephemeral"))
     monkeypatch.setenv("ORACLE_ALLOW_EPHEMERAL", "true")
     data_paths.verify_persistent_data_dir()  # explicit opt-out, must not raise
+
+
+def test_verify_guard_fallback_to_proc_mounts(monkeypatch, tmp_path):
+    """Railway sometimes mounts the volume without injecting the env var."""
+    from unittest.mock import patch
+    _clear_railway(monkeypatch)
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
+    monkeypatch.setenv("AGENTIC_DATA_DIR", str(tmp_path / "ephemeral"))
+    monkeypatch.setattr(data_paths, "_is_mounted_volume", lambda p: True)
+
+    with patch.object(Path, "exists", return_value=True):
+        data_paths.verify_persistent_data_dir()  # must not raise
 
 
 # ── Seeding baseline artifacts (copy-if-absent, never overwrite) ───────────

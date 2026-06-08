@@ -189,8 +189,8 @@ async def missed_review():
     return {
         "reviews": [r.model_dump(mode="json") for r in reviews],
         "total": len(reviews),
-        "caught_early": sum(1 for r in reviews if r.classification.value == "caught_early"),
-        "missed": sum(1 for r in reviews if r.classification.value.startswith("missed")),
+        "caught_early": sum(1 for r in reviews if r.classification and r.classification.value == "caught_early"),
+        "missed": sum(1 for r in reviews if r.classification and r.classification.value.startswith("missed")),
     }
 
 

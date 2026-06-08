@@ -77,11 +77,15 @@ def _in_range(value: Any, start: Optional[str], end: Optional[str]) -> bool:
         return False
     if start:
         start_dt = aware_utc(start)
-        if start_dt and dt < start_dt:
+        if start_dt is None:
+            return False
+        if dt < start_dt:
             return False
     if end:
         end_dt = aware_utc(end)
-        if end_dt and dt > end_dt:
+        if end_dt is None:
+            return False
+        if dt > end_dt:
             return False
     return True
 
@@ -159,7 +163,7 @@ def _latency_enrich(row: dict) -> dict:
     elif alert_sent:
         status = "delayed" if is_delayed else "alerted"
     else:
-        status = "delayed"
+        status = "incomplete"
     enriched = dict(row)
     enriched["derived"] = derived
     enriched["status"] = status
@@ -437,7 +441,7 @@ def read_telegram_outbox(
         "pending": status_counts.get("pending", 0),
         "retrying": status_counts.get("failed", 0),  # failed-with-retries pending
         "sent": sent,
-        "failed": status_counts.get("failed", 0),
+        "failed": status_counts.get("dead_letter", 0),
         "dead_letter": status_counts.get("dead_letter", 0),
         "success_rate": round(sent / total, 4) if total else 0.0,
         "total_retries": sum(int(r.get("attempts") or 0) for r in filtered),

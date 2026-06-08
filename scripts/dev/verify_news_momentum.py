@@ -42,7 +42,7 @@ def main():
                 if r.status == 200:
                     print("Server is UP")
                     break
-        except:
+        except (urllib.error.URLError, TimeoutError):
             pass
         time.sleep(1)
     else:

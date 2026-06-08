@@ -175,9 +175,11 @@ async def scan_now():
     if not _orchestrator:
         raise HTTPException(status_code=503, detail="News momentum system not initialized")
 
-    # Run a manual scan with empty news events (will rely on existing candidates)
-    # In a real scan, this would fetch fresh news
-    result = await _orchestrator.scan([])
+    # Use the same lock the background loops hold so manual scans don't race
+    # with the periodic RSS loop or Alpaca stream handler.
+    from src.main import _get_news_scan_lock
+    async with _get_news_scan_lock():
+        result = await _orchestrator.scan([])
 
     return ScanNowResponse(
         scan_time=result.scan_time.isoformat(),

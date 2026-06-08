@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -567,10 +568,14 @@ def render_smoke_report(
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    )
+    _handler = logging.StreamHandler(sys.stdout)
+    _handler.setLevel(logging.DEBUG)
+    _handler.addFilter(lambda rec: rec.levelno < logging.WARNING)
+    _handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+    _err_handler = logging.StreamHandler(sys.stderr)
+    _err_handler.setLevel(logging.WARNING)
+    _err_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+    logging.basicConfig(level=logging.INFO, handlers=[_handler, _err_handler])
     # Authenticated market-data URLs can include API keys in their query string.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

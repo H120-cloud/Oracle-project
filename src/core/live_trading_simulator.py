@@ -18,7 +18,7 @@ import json
 import logging
 import argparse
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from collections import deque
 import sys
@@ -174,11 +174,11 @@ class LiveTradingSimulator:
         print(f"{'='*80}\n")
         
         self.running = True
-        start_time = datetime.now()
+        start_time = datetime.now(timezone.utc)
         
         try:
             while self.running:
-                elapsed = (datetime.now() - start_time).total_seconds() / 60
+                elapsed = (datetime.now(timezone.utc) - start_time).total_seconds() / 60
                 if elapsed >= duration_minutes:
                     print(f"\n⏱️  Duration reached ({duration_minutes} min). Stopping...")
                     break
@@ -358,7 +358,7 @@ class LiveTradingSimulator:
     
     def _enter_trade(self, signal: TradingSignal, bar: OHLCVBar):
         """Enter a new paper trade."""
-        trade_id = f"{self.ticker}-{datetime.now().strftime('%H%M%S')}"
+        trade_id = f"{self.ticker}-{datetime.now(timezone.utc).strftime('%H%M%S')}"
         
         # Calculate position size based on risk
         risk_amount = self.performance.current_equity * (self.risk_per_trade_pct / 100)
@@ -379,7 +379,7 @@ class LiveTradingSimulator:
         trade = PaperTrade(
             trade_id=trade_id,
             ticker=self.ticker,
-            entry_time=datetime.now(),
+            entry_time=datetime.now(timezone.utc),
             entry_price=bar.close,
             shares=shares,
             stop_price=signal.stop_price or bar.close * 0.98,
@@ -409,13 +409,13 @@ class LiveTradingSimulator:
         for trade_id, trade in self.open_trades.items():
             # Check stop loss
             if bar.low <= trade.stop_price:
-                trade.close(trade.stop_price, datetime.now(), "STOPPED")
+                trade.close(trade.stop_price, datetime.now(timezone.utc), "STOPPED")
                 closed.append(trade_id)
                 self._log_trade_close(trade, "STOP LOSS")
             
             # Check target
             elif bar.high >= trade.target_price:
-                trade.close(trade.target_price, datetime.now(), "TARGET")
+                trade.close(trade.target_price, datetime.now(timezone.utc), "TARGET")
                 closed.append(trade_id)
                 self._log_trade_close(trade, "TARGET HIT")
         
@@ -440,7 +440,7 @@ class LiveTradingSimulator:
         emoji = "🟢" if trade.pnl_pct > 0 else "🔴"
         print(f"\n  {emoji} EXIT: {trade.ticker} @ ${trade.exit_price:.2f} | {reason}")
         print(f"     P&L: {trade.pnl_pct:+.2f}% (${trade.pnl_dollars:+.2f})")
-        print(f"     Duration: {str(datetime.now() - trade.entry_time).split('.')[0]}")
+        print(f"     Duration: {str(datetime.now(timezone.utc) - trade.entry_time).split('.')[0]}")
     
     def _log_rejection(self, signal: TradingSignal, bar: OHLCVBar):
         """Log signal rejection."""
@@ -464,7 +464,7 @@ class LiveTradingSimulator:
             current_value += trade.shares * latest.close
         
         # Update equity history
-        self.performance.equity_history.append((datetime.now(), current_value))
+        self.performance.equity_history.append((datetime.now(timezone.utc), current_value))
         
         # Print status line
         pnl = current_value - self.starting_capital
@@ -494,7 +494,7 @@ class LiveTradingSimulator:
             print(f"  Closing {len(self.open_trades)} open positions at ${current_price:.2f}\n")
             
             for trade in list(self.open_trades.values()):
-                trade.close(current_price, datetime.now(), "SIMULATION_END")
+                trade.close(current_price, datetime.now(timezone.utc), "SIMULATION_END")
                 self._log_trade_close(trade, "SIMULATION END")
                 self.closed_trades.append(trade)
                 self.performance.total_trades += 1
@@ -558,10 +558,14 @@ def main():
     args = parser.parse_args()
     
     # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    _handler = logging.StreamHandler(sys.stdout)
+    _handler.setLevel(logging.DEBUG)
+    _handler.addFilter(lambda rec: rec.levelno < logging.WARNING)
+    _handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    _err_handler = logging.StreamHandler(sys.stderr)
+    _err_handler.setLevel(logging.WARNING)
+    _err_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logging.basicConfig(level=logging.INFO, handlers=[_handler, _err_handler])
     
     # Create and run simulator
     simulator = LiveTradingSimulator(

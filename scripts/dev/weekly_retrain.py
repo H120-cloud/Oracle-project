@@ -28,10 +28,14 @@ from dotenv import load_dotenv
 load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
-)
+_handler = logging.StreamHandler(sys.stdout)
+_handler.setLevel(logging.DEBUG)
+_handler.addFilter(lambda rec: rec.levelno < logging.WARNING)
+_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"))
+_err_handler = logging.StreamHandler(sys.stderr)
+_err_handler.setLevel(logging.WARNING)
+_err_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_handler, _err_handler])
 logger = logging.getLogger("weekly_retrain")
 
 

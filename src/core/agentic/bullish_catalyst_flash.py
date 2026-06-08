@@ -82,6 +82,8 @@ def assess_bullish_flash(
         return BullishFlashAssessment(False, block_reason="missing_published_at")
     if published.tzinfo is None:
         published = published.replace(tzinfo=timezone.utc)
+    if detected is None:
+        detected = published
     if detected.tzinfo is None:
         detected = detected.replace(tzinfo=timezone.utc)
     max_age = float(getattr(config, "bullish_flash_max_age_seconds", 180))

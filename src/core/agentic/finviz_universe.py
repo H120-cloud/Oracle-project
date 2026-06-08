@@ -187,7 +187,7 @@ def _looks_like_ticker(ticker: str) -> bool:
 def _load_bad_tickers() -> set[str]:
     try:
         if os.path.exists(_BAD_TICKERS_PATH):
-            with open(_BAD_TICKERS_PATH) as f:
+            with open(_BAD_TICKERS_PATH, encoding="utf-8") as f:
                 return set(json.load(f))
     except Exception as exc:
         logger.debug("Failed to load bad tickers: %s", exc)

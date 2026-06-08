@@ -147,7 +147,8 @@ def enqueue_alert(
 ) -> TelegramOutboxRecord:
     records = load_outbox(path)
     existing = next((r for r in records if r.alert_id == alert_id), None)
-    next_retry = _now() + timedelta(seconds=float(retry_after or _backoff_seconds((existing.attempts + 1) if existing else 1)))
+    delay = float(retry_after) if retry_after is not None else _backoff_seconds((existing.attempts + 1) if existing else 1)
+    next_retry = _now() + timedelta(seconds=delay)
     if existing is not None:
         if existing.status == "sent":
             return existing

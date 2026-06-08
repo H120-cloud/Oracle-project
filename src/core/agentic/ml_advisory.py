@@ -865,7 +865,7 @@ class MLAdvisoryEngine:
         for pkl in pkl_files:
             meta_file = MODEL_DIR / pkl.name.replace("model_", "meta_").replace(".pkl", ".json")
             if meta_file.exists():
-                with open(meta_file) as f:
+                with open(meta_file, encoding="utf-8") as f:
                     meta = json.load(f)
                 if meta.get("approved"):
                     self._load_artifact(pkl)
@@ -956,7 +956,7 @@ class MLAdvisoryEngine:
         """List all model versions with metadata."""
         versions = []
         for meta_file in sorted(MODEL_DIR.glob("meta_*.json"), reverse=True):
-            with open(meta_file) as f:
+            with open(meta_file, encoding="utf-8") as f:
                 meta = json.load(f)
             versions.append(meta)
         return versions
@@ -996,5 +996,5 @@ class MLAdvisoryEngine:
             "risk_adjusted_score": prediction.risk_adjusted_score,
             "suggested_position_size": prediction.suggested_position_size,
         }
-        with open(audit_path, "a") as f:
+        with open(audit_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")

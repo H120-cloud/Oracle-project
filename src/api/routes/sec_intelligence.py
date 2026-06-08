@@ -92,9 +92,9 @@ def _summarize(c: SECIntelligenceCandidate) -> CandidateSummary:
     return CandidateSummary(
         ticker=c.ticker,
         company_name=c.company_name or "",
-        dilution_behavior=c.dilution_behavior.value,
-        oracle_action=c.oracle_action.value,
-        overall_filing_sentiment=c.overall_filing_sentiment.value,
+        dilution_behavior=c.dilution_behavior.value if c.dilution_behavior else None,
+        oracle_action=c.oracle_action.value if c.oracle_action else None,
+        overall_filing_sentiment=c.overall_filing_sentiment.value if c.overall_filing_sentiment else None,
         dilution_probability_score=c.scores.dilution_probability_score,
         toxic_financing_score=c.scores.toxic_financing_score,
         warrant_overhang_score=c.scores.warrant_overhang_score,
@@ -129,9 +129,15 @@ async def list_candidates(
     orch = get_orchestrator()
     candidates = orch.all_candidates()
     if behavior:
-        candidates = [c for c in candidates if c.dilution_behavior.value == behavior]
+        candidates = [
+            c for c in candidates
+            if c.dilution_behavior and c.dilution_behavior.value == behavior
+        ]
     if action:
-        candidates = [c for c in candidates if c.oracle_action.value == action]
+        candidates = [
+            c for c in candidates
+            if c.oracle_action and c.oracle_action.value == action
+        ]
     # Sort by structural_trap_risk desc so worst offenders surface first
     candidates.sort(key=lambda c: c.scores.structural_trap_risk_score, reverse=True)
     return [_summarize(c) for c in candidates[:limit]]

@@ -279,7 +279,7 @@ class CatalystScanner:
         try:
             path = os.path.join(DATA_DIR, "bad_tickers.json")
             if os.path.exists(path):
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     self._bad_tickers = set(json.load(f))
                 logger.info("CatalystScanner: loaded %d cached bad tickers", len(self._bad_tickers))
         except Exception as exc:

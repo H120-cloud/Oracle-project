@@ -1000,10 +1000,6 @@ class NewsMomentumOrchestrator:
             if sim > 0.80:  # High similarity = duplicate
                 event.duplicate_of_id = reg_detected_at.isoformat()
                 return event
-            if sim > 0.80 and event.source in reg_event.velocity.sources_seen:
-                # Same source, very similar headline — likely a re-post
-                event.duplicate_of_id = reg_detected_at.isoformat()
-                return event
         return event
 
     # ── News-to-Price Lag Detection ───────────────────────────────────────────
@@ -1095,9 +1091,6 @@ class NewsMomentumOrchestrator:
         # Get adaptive thresholds
         adaptive = self._telegram_learning.get_adaptive_thresholds()
 
-        # Track which tickers we've processed for velocity/duplicate
-        processed_tickers: Dict[str, NewsEvent] = {}
-
         for event in news_events:
             # Cross-source velocity: merge with earlier event for same ticker if within window
             event = self._merge_event_velocity(event)
@@ -1114,7 +1107,6 @@ class NewsMomentumOrchestrator:
                 candidate.velocity_score = event.velocity.confidence_boost
                 candidate.news_impact_score = min(100.0, candidate.news_impact_score + candidate.velocity_score)
                 result.candidates.append(candidate)
-                processed_tickers[event.ticker] = event
 
         # Fresh news must alert before the slower active-candidate refresh pass.
         # This is the first-mover path: if a new Finviz/StockTitan headline
@@ -1511,7 +1503,11 @@ class NewsMomentumOrchestrator:
             c.raw_text = event_raw
         if (not c.source_url) and event.source_url:
             c.source_url = event.source_url
-        if (getattr(c, "timestamp_confidence", "HIGH") or "HIGH").upper() != "HIGH":
+        # Only upgrade confidence, never downgrade
+        _CONFIDENCE_RANK = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+        existing_rank = _CONFIDENCE_RANK.get((getattr(c, "timestamp_confidence", "HIGH") or "HIGH").upper(), 0)
+        event_rank = _CONFIDENCE_RANK.get((event.timestamp_confidence or "HIGH").upper(), 0)
+        if event_rank > existing_rank:
             c.timestamp_confidence = event.timestamp_confidence
         if not c.fetched_at and event.fetched_at:
             c.fetched_at = event.fetched_at
@@ -1851,7 +1847,7 @@ class NewsMomentumOrchestrator:
             bad_path = DATA_DIR / "bad_tickers.json"
             if not bad_path.exists():
                 return False
-            with open(bad_path) as f:
+            with open(bad_path, encoding="utf-8") as f:
                 bad = set(json.load(f))
             return ticker.upper() in bad
         except Exception:
@@ -2656,26 +2652,30 @@ class NewsMomentumOrchestrator:
                 alert_type="news_momentum",
                 priority=2 if getattr(c, "_first_mover", False) else 5,
             )
+            now_ts = datetime.now(timezone.utc)
+            # Always record cooldown + alert memory, even when the direct send
+            # fails and the message is enqueued for outbox retry. Without this,
+            # the next scan sees no suppression state and can spam the same
+            # ticker again before the outbox delivers.
+            self._alert_cooldown[c.ticker] = now_ts
+            # Record headline cooldown so the same news can't re-alert
+            headline_key = f"{c.ticker}:{self._headline_hash(c.headline)}"
+            self._headline_alert_cooldown[headline_key] = now_ts
+            self._remember_sent_alert(c, now_ts)
+            # Prune old headline cooldowns (keep 24h — must exceed the
+            # news-freshness window so the same headline can't re-alert
+            # within its own fresh lifetime).
+            cutoff = now_ts - timedelta(hours=24)
+            self._headline_alert_cooldown = {
+                k: v for k, v in self._headline_alert_cooldown.items()
+                if (_aware_utc(v) or now_ts) >= cutoff
+            }
+            # Persist cooldowns immediately so a crash/restart doesn't lose them
+            self._save_cooldowns()
+            self._save_headline_cooldowns()
             if sent:
                 c.telegram_sent = True
-                now_ts = datetime.now(timezone.utc)
                 c.telegram_sent_at = now_ts
-                self._alert_cooldown[c.ticker] = now_ts
-                # Record headline cooldown so the same news can't re-alert
-                headline_key = f"{c.ticker}:{self._headline_hash(c.headline)}"
-                self._headline_alert_cooldown[headline_key] = now_ts
-                self._remember_sent_alert(c, now_ts)
-                # Prune old headline cooldowns (keep 24h — must exceed the
-                # news-freshness window so the same headline can't re-alert
-                # within its own fresh lifetime).
-                cutoff = now_ts - timedelta(hours=24)
-                self._headline_alert_cooldown = {
-                    k: v for k, v in self._headline_alert_cooldown.items()
-                    if (_aware_utc(v) or now_ts) >= cutoff
-                }
-                # Persist cooldowns immediately so a crash/restart doesn't lose them
-                self._save_cooldowns()
-                self._save_headline_cooldowns()
                 try:
                     self._save_candidates()
                 except Exception as persist_exc:
@@ -2987,8 +2987,10 @@ class NewsMomentumOrchestrator:
             news_time = _aware_utc(c.published_at or c.detected_at)
             if not news_time:
                 return None
+            # yfinance returns naive timestamps; strip tz so pandas compares cleanly
+            news_time_naive = news_time.replace(tzinfo=None)
 
-            mask = hist.index > pd.Timestamp(news_time)
+            mask = hist.index > pd.Timestamp(news_time_naive)
             post = hist[mask]
             if post.empty:
                 return None

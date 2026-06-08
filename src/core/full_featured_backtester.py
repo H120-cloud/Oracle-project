@@ -582,7 +582,7 @@ class FullFeaturedBacktester:
                     try:
                         ict_score = int(r.split(":")[1].split("/")[0].strip())
                     except Exception:
-                        pass
+                        logger.debug("Backtester ICT score parse skipped: %s", r)
                 elif "Sweep+reclaim" in r:
                     liquidity_sweep = True
                     reclaimed = True
@@ -596,13 +596,13 @@ class FullFeaturedBacktester:
                     try:
                         extension = float(r.split()[1].rstrip("%"))
                     except Exception:
-                        pass
+                        logger.debug("Backtester extension parse skipped: %s", r)
                 elif "Near OB" in r:
                     near_ob = True
                     try:
                         ob_freshness = float(r.split("fresh:")[1].rstrip(")"))
                     except Exception:
-                        pass
+                        logger.debug("Backtester OB freshness parse skipped: %s", r)
                 elif "Volatility" in r:
                     if "high" in r.lower():
                         vol_class = "high"

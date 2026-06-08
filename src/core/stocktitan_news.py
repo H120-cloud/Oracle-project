@@ -122,27 +122,27 @@ class StockTitanScraper:
     @staticmethod
     async def _fetch_with_retry(url: str, max_retries: int = 3) -> httpx.Response:
         """Fetch URL with exponential backoff on retryable errors."""
-        for attempt in range(1, max_retries + 1):
-            try:
-                async with httpx.AsyncClient(headers=HEADERS, timeout=15, follow_redirects=True) as client:
+        async with httpx.AsyncClient(headers=HEADERS, timeout=15, follow_redirects=True) as client:
+            for attempt in range(1, max_retries + 1):
+                try:
                     resp = await client.get(url)
-                if resp.status_code < 500 and resp.status_code != 429:
+                    if resp.status_code < 500 and resp.status_code != 429:
+                        return resp
+                    if resp.status_code in (503, 504, 429):
+                        if attempt < max_retries:
+                            wait = 2 ** (attempt - 1)
+                            logger.warning("StockTitan fetch got %d, retrying in %ds (attempt %d/%d)", resp.status_code, wait, attempt, max_retries)
+                            await asyncio.sleep(wait)
+                            continue
+                    resp.raise_for_status()
                     return resp
-                if resp.status_code in (503, 504, 429):
+                except (httpx.TimeoutException, httpx.ConnectError) as exc:
                     if attempt < max_retries:
                         wait = 2 ** (attempt - 1)
-                        logger.warning("StockTitan fetch got %d, retrying in %ds (attempt %d/%d)", resp.status_code, wait, attempt, max_retries)
+                        logger.warning("StockTitan fetch error: %s, retrying in %ds (attempt %d/%d)", exc, wait, attempt, max_retries)
                         await asyncio.sleep(wait)
-                        continue
-                resp.raise_for_status()
-                return resp
-            except (httpx.TimeoutException, httpx.ConnectError) as exc:
-                if attempt < max_retries:
-                    wait = 2 ** (attempt - 1)
-                    logger.warning("StockTitan fetch error: %s, retrying in %ds (attempt %d/%d)", exc, wait, attempt, max_retries)
-                    await asyncio.sleep(wait)
-                else:
-                    raise
+                    else:
+                        raise
         raise httpx.HTTPStatusError(
             f"Max retries exceeded for {url}",
             request=None, response=None,

@@ -79,7 +79,7 @@ def _parse_timestamp(text: str) -> Optional[datetime]:
         dt = parsedate_to_datetime(text)
         return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except Exception:
-        pass
+        logger.debug("Wire news timestamp parse failed for: %s", text)
     match = _DATE_TEXT_RE.search(text)
     if not match:
         return None

@@ -43,6 +43,7 @@ class AdaptiveTelegramLearning:
         _ensure_dir()
         self._alerts: List[TelegramAlertRecord] = []
         self._by_catalyst: Dict[str, List[TelegramAlertRecord]] = defaultdict(list)
+        self._by_id: Dict[str, TelegramAlertRecord] = {}
         self._load()
 
     # ── Persistence ───────────────────────────────────────────────────────────
@@ -56,8 +57,9 @@ class AdaptiveTelegramLearning:
                 rec = TelegramAlertRecord(**item)
                 self._alerts.append(rec)
                 self._by_catalyst[rec.catalyst_type.value].append(rec)
-            except Exception:
-                pass
+                self._by_id[rec.alert_id] = rec
+            except Exception as exc:
+                logger.warning("TelegramLearning: skipped corrupt record: %s", exc)
         logger.info("TelegramLearning: loaded %d alert records", len(self._alerts))
 
     def _save(self) -> None:
@@ -67,6 +69,7 @@ class AdaptiveTelegramLearning:
     # ── Recording ─────────────────────────────────────────────────────────────
 
     def record_alert(self, record: TelegramAlertRecord) -> None:
+        self._by_id[record.alert_id] = record
         self._alerts.append(record)
         self._by_catalyst[record.catalyst_type.value].append(record)
         self._save()
@@ -84,32 +87,34 @@ class AdaptiveTelegramLearning:
         five_day_high: Optional[float] = None,
     ) -> None:
         """Fill in outcome data for an alert."""
-        for alert in self._alerts:
-            if alert.alert_id == alert_id:
-                alert.price_15m_later = price_15m
-                alert.price_1h_later = price_1h
-                alert.price_4h_later = price_4h
-                alert.next_day_open = next_day_open
-                alert.next_day_high = next_day_high
-                alert.next_day_close = next_day_close
-                alert.two_day_high = two_day_high
-                alert.five_day_high = five_day_high
-                alert.resolved_at = datetime.now(timezone.utc)
+        alert = self._by_id.get(alert_id)
+        if alert is None:
+            logger.warning("TelegramLearning: resolve_outcome called for unknown alert_id=%s", alert_id)
+            return
 
-                # Compute MFE / MAE
-                if alert.price_at_alert > 0:
-                    highs = [h for h in [price_15m, price_1h, price_4h, next_day_high, two_day_high, five_day_high] if h]
-                    lows = [l for l in [price_15m, price_1h, price_4h, next_day_close] if l]
-                    if highs:
-                        alert.mfe_pct = round(((max(highs) - alert.price_at_alert) / alert.price_at_alert) * 100, 2)
-                    if lows:
-                        alert.mae_pct = round(((alert.price_at_alert - min(lows)) / alert.price_at_alert) * 100, 2)
+        alert.price_15m_later = price_15m
+        alert.price_1h_later = price_1h
+        alert.price_4h_later = price_4h
+        alert.next_day_open = next_day_open
+        alert.next_day_high = next_day_high
+        alert.next_day_close = next_day_close
+        alert.two_day_high = two_day_high
+        alert.five_day_high = five_day_high
+        alert.resolved_at = datetime.now(timezone.utc)
 
-                # Classify outcome
-                alert.outcome = self._classify_outcome(alert)
-                self._save()
-                logger.info("TelegramLearning: resolved alert %s as %s", alert_id, alert.outcome.value)
-                return
+        # Compute MFE / MAE
+        if alert.price_at_alert > 0:
+            highs = [h for h in [price_15m, price_1h, price_4h, next_day_high, two_day_high, five_day_high] if h]
+            lows = [l for l in [price_15m, price_1h, price_4h, next_day_close] if l]
+            if highs:
+                alert.mfe_pct = round(((max(highs) - alert.price_at_alert) / alert.price_at_alert) * 100, 2)
+            if lows:
+                alert.mae_pct = round(((alert.price_at_alert - min(lows)) / alert.price_at_alert) * 100, 2)
+
+        # Classify outcome
+        alert.outcome = self._classify_outcome(alert)
+        self._save()
+        logger.info("TelegramLearning: resolved alert %s as %s", alert_id, alert.outcome.value)
 
     def _classify_outcome(self, alert: TelegramAlertRecord) -> AlertOutcome:
         # Calibrated to realistic news momentum behaviour. Premarket / open

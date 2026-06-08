@@ -3,7 +3,7 @@
 import logging
 from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 import numpy as np
 import pandas as pd
@@ -153,7 +153,7 @@ class ProfessionalScanner:
         bars = []
         for idx, row in df.iterrows():
             bars.append(OHLCVBar(
-                timestamp=idx.to_pydatetime() if hasattr(idx, 'to_pydatetime') else datetime.now(),
+                timestamp=idx.to_pydatetime() if hasattr(idx, 'to_pydatetime') else datetime.now(timezone.utc),
                 open=float(row["Open"]), high=float(row["High"]), low=float(row["Low"]),
                 close=float(row["Close"]), volume=int(row["Volume"])))
         return bars
@@ -220,7 +220,7 @@ class ProfessionalScanner:
                 latest = news[0]
                 cat.headline = latest.get('title', '')
                 cat.source = latest.get('publisher', '')
-                cat.timestamp = datetime.now()  # Simplified
+                cat.timestamp = datetime.now(timezone.utc)  # Simplified
                 headline_lower = cat.headline.lower()
                 tier1_keywords = ['earnings', 'fda', 'approval', 'contract', 'merger', 'acquisition', 'settlement']
                 tier2_keywords = ['partnership', 'upgrade', 'downgrade', 'initiated', 'target']

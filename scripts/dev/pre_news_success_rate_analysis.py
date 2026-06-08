@@ -37,6 +37,7 @@ import json
 import logging
 import math
 import statistics
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,7 +51,14 @@ except ImportError:
     HAS_PANDAS = False
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+_handler = logging.StreamHandler(sys.stdout)
+_handler.setLevel(logging.DEBUG)
+_handler.addFilter(lambda rec: rec.levelno < logging.WARNING)
+_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+_err_handler = logging.StreamHandler(sys.stderr)
+_err_handler.setLevel(logging.WARNING)
+_err_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_handler, _err_handler])
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  PATHS

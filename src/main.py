@@ -395,7 +395,7 @@ async def _pre_news_scan_loop():
                     gap_str = f" (volume preceded by {gap:.0f}m)" if gap else ""
                     msg = (
                         f"📰 <b>NEWS CONFIRMED</b> — <b>{anomaly.ticker}</b>{gap_str}\n"
-                        f"Price: ${anomaly.price:.2f}  RVOL: {anomaly.volume_metrics.rvol_current:.1f}x\n"
+                        f"Price: ${anomaly.price:.2f}  RVOL: {anomaly.volume_metrics.rvol_current or 0:.1f}x\n"
                         f"Suspicion score: {anomaly.pre_news_suspicion_score:.0f}\n"
                         f"<i>{headline[:200]}</i>"
                     )
@@ -885,9 +885,11 @@ async def _watchlist_broadcast_loop():
                                             _telegram_watch_alerted[cooldown_key] = now
                                             msg = (
                                                 f"🔔 <b>{item.ticker}</b> — {alert.get('message', 'Signal triggered')}\n"
-                                                f"Price: ${alert.get('price', 0):.2f}"
+                                                f"Price: ${alert.get('price') or 0:.2f}"
                                             )
-                                            asyncio.create_task(send_telegram_alert(msg))
+                                            task = asyncio.create_task(send_telegram_alert(msg))
+                                            _background_tasks.add(task)
+                                            task.add_done_callback(_background_tasks.discard)
                                     except Exception:
                                         pass
 
@@ -1554,8 +1556,8 @@ async def _news_momentum_ml_retrain_loop():
                     orch = _news_momentum_orch
                     if orch and orch._ml_engine:
                         meta = orch._ml_engine._meta
-                        cv_mean = meta.get("cv_auc_mean", 0)
-                        cv_std = meta.get("cv_auc_std", 0)
+                        cv_mean = meta.get("cv_auc_mean") or 0
+                        cv_std = meta.get("cv_auc_std") or 0
                         if cv_mean > 0:
                             cv_str = f"\nCV AUC: {cv_mean:.3f} (±{cv_std:.3f})"
                     missed = getattr(result, "reason", "")

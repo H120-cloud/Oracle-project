@@ -51,7 +51,7 @@ _BEARISH = [
 
 
 def _quick_sentiment(text: str) -> str:
-    lower = text.lower()
+    lower = (text or "").lower()
     bullish = sum(1 for keyword in _BULLISH if keyword in lower)
     bearish = sum(1 for keyword in _BEARISH if keyword in lower)
     if bullish > bearish:

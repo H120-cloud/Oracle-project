@@ -401,7 +401,7 @@ class NewsIntelligenceEngine:
 
     def _compute_sentiment(self, headline: str) -> tuple:
         """Keyword-based sentiment scoring."""
-        words = set(re.findall(r'\b\w+\b', headline.lower()))
+        words = set(re.findall(r'\b\w+\b', (headline or "").lower()))
         pos = len(words & POSITIVE_WORDS)
         neg = len(words & NEGATIVE_WORDS)
 

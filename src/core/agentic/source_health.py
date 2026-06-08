@@ -63,7 +63,7 @@ class SourceHealthTracker:
         self._snapshots: Dict[str, SourceHealthSnapshot] = {}
 
     def snapshot(self, source: str) -> SourceHealthSnapshot:
-        key = source.lower().strip() or "unknown"
+        key = (source or "").lower().strip() or "unknown"
         if key not in self._snapshots:
             self._snapshots[key] = SourceHealthSnapshot(source=source)
         return self._snapshots[key]

@@ -213,7 +213,7 @@ class PreNewsLearningEngine:
                 # Not flagged — why?
                 if (rvol or 0) < 2:
                     classification = MissedAnomalyClass.MISSED_NO_VOLUME_SIGNAL
-                    reason = f"RVOL only {rvol:.1f}x — below threshold"
+                    reason = f"RVOL only {rvol or 0:.1f}x — below threshold"
                 else:
                     classification = MissedAnomalyClass.MISSED_NOT_IN_UNIVERSE
                     reason = "Ticker not in scan universe"

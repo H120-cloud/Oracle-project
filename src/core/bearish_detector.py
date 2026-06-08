@@ -205,7 +205,7 @@ class BearishDetector:
         if s.get("struct_break"): r.append("Structure break: price below higher low")
         elif s.get("lower_highs"): r.append("Lower highs pattern forming")
         elif s.get("lower_lows"): r.append("Lower lows: downtrend confirmed")
-        if b.get("failed"): r.append(f"Failed breakout: reversed {b.get('rev_pct', 0):.1f}%")
+        if b.get("failed"): r.append(f"Failed breakout: reversed {b.get('rev_pct') or 0:.1f}%")
         elif b.get("reject"): r.append("Resistance rejection with long wicks")
         if b.get("distribution"): r.append("Distribution: high volume on decline")
         if sup.get("ema20_lost"): r.append("Lost EMA-20 support")

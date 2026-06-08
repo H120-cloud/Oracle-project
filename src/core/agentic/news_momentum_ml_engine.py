@@ -321,9 +321,9 @@ class NewsMomentumMLEngine:
             logger.info(
                 "ML: loaded %s model (version=%s, samples=%d, auc=%.3f)",
                 self._backend,
-                self._meta.get("model_version", "unknown"),
-                self._meta.get("samples", 0),
-                self._meta.get("auc", 0.0),
+                self._meta.get("model_version") or "unknown",
+                self._meta.get("samples") or 0,
+                self._meta.get("auc") or 0.0,
             )
             return True
         except Exception as exc:
@@ -607,8 +607,8 @@ class NewsMomentumMLEngine:
 
             # ── Promotion with drift detection ──────────────────────────────
             promote = False
-            existing_auc = float(self._meta.get("auc", 0.0)) if self._model is not None else 0.0
-            existing_cv_mean = float(self._meta.get("cv_auc_mean", 0.0)) if self._model is not None else 0.0
+            existing_auc = float(self._meta.get("auc") or 0.0) if self._model is not None else 0.0
+            existing_cv_mean = float(self._meta.get("cv_auc_mean") or 0.0) if self._model is not None else 0.0
 
             # Drift: if CV AUC dropped >0.05 from previous model, warn but still
             # promote if hold-out AUC is acceptable (could be regime change)

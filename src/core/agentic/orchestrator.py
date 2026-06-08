@@ -633,7 +633,7 @@ class AgenticOrchestrator:
         # Trap warning
         if decision == ND.DANGEROUS_TRAP and (result.trap_warning or result.is_dilution or result.is_parabolic):
             msg = self._format_trap_alert(cand, result)
-            self._send_telegram(msg)
+            self._send_telegram(msg, alert_id=f"agentic_trap:{ticker}:{now.isoformat()}", ticker=ticker)
             self._news_impact_alert_cooldowns[ticker] = now
             return
 
@@ -656,7 +656,7 @@ class AgenticOrchestrator:
             return
 
         msg = self._format_news_impact_alert(cand, result)
-        self._send_telegram(msg)
+        self._send_telegram(msg, alert_id=f"agentic_news:{ticker}:{now.isoformat()}", ticker=ticker)
         self._news_impact_alert_cooldowns[ticker] = now
 
     def _format_news_impact_alert(self, cand: AgenticCandidate, result) -> str:
@@ -735,11 +735,17 @@ class AgenticOrchestrator:
         lines.append(f"  {result.oracle_action.value}")
         return "\n".join(lines)
 
-    def _send_telegram(self, message: str) -> None:
+    def _send_telegram(self, message: str, *, alert_id: str, ticker: str) -> None:
         """Best-effort sync Telegram send; swallows errors."""
         try:
             from src.services.telegram_service import send_telegram_alert_sync
-            send_telegram_alert_sync(message, parse_mode="HTML")
+            send_telegram_alert_sync(
+                message,
+                parse_mode="HTML",
+                alert_id=alert_id,
+                ticker=ticker,
+                alert_type="agentic_news_impact",
+            )
         except Exception as exc:
             logger.debug("Telegram send failed: %s", exc)
 
@@ -838,16 +844,24 @@ class AgenticOrchestrator:
         self._alerts.append(alert)
         self._alert_cooldowns[cand.ticker] = now
         try:
-            send_telegram_alert_sync(alert.headline + "\n" + "\n".join(reasons))
+            from src.services.telegram_service import send_telegram_alert_sync
+            send_telegram_alert_sync(
+                alert.headline + "\n" + "\n".join(reasons),
+                parse_mode="HTML",
+                alert_id=f"agentic:{cand.ticker}:{now.isoformat()}",
+                ticker=cand.ticker,
+                alert_type="agentic_entry",
+            )
         except Exception as e:
             logger.error("Telegram alert failed: %s", e)
 
     # ── Persistence ──────────────────────────────────────────────────────
 
     def _persist_state(self):
-        """Save current candidates and alerts to disk for crash recovery."""
+        """Save current candidates, alerts, and cooldowns to disk for crash recovery."""
         cand_path = os.path.join(DATA_DIR, "candidates.json")
         alert_path = os.path.join(DATA_DIR, "alerts.json")
+        cooldown_path = os.path.join(DATA_DIR, "agentic_cooldowns.json")
 
         cand_data = {t: c.model_dump(mode="json") for t, c in self._candidates.items()}
         # Defensive: _alerts may not exist if instance was created via __new__ (e.g. in tests)
@@ -857,10 +871,21 @@ class AgenticOrchestrator:
         save_json_file(cand_path, cand_data)
         save_json_file(alert_path, alert_data)
 
+        cooldown_data = {
+            "alert_cooldowns": {
+                t: ts.isoformat() for t, ts in self._alert_cooldowns.items()
+            },
+            "news_impact_alert_cooldowns": {
+                t: ts.isoformat() for t, ts in self._news_impact_alert_cooldowns.items()
+            },
+        }
+        save_json_file(cooldown_path, cooldown_data)
+
     def load_state(self):
         """Load persisted state from disk."""
         cand_path = os.path.join(DATA_DIR, "candidates.json")
         alert_path = os.path.join(DATA_DIR, "alerts.json")
+        cooldown_path = os.path.join(DATA_DIR, "agentic_cooldowns.json")
 
         cand_data = load_json_file(cand_path, default={})
         for ticker, cand_dict in cand_data.items():
@@ -875,5 +900,17 @@ class AgenticOrchestrator:
         for alert_dict in alert_data:
             try:
                 self._alerts.append(AgenticAlert.model_validate(alert_dict))
+            except Exception:
+                pass
+
+        cooldown_data = load_json_file(cooldown_path, default={})
+        for t, ts_str in cooldown_data.get("alert_cooldowns", {}).items():
+            try:
+                self._alert_cooldowns[t] = datetime.fromisoformat(ts_str)
+            except Exception:
+                pass
+        for t, ts_str in cooldown_data.get("news_impact_alert_cooldowns", {}).items():
+            try:
+                self._news_impact_alert_cooldowns[t] = datetime.fromisoformat(ts_str)
             except Exception:
                 pass

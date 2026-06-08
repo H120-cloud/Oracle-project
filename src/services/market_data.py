@@ -824,7 +824,8 @@ class FinnhubProvider(IMarketDataProvider):
             cum_tp_vol = (typical_price * volume).cumsum()
             cum_vol = volume.cumsum()
             vwap = cum_tp_vol / cum_vol
-            vwap_dist = ((close.iloc[-1] - vwap.iloc[-1]) / vwap.iloc[-1]) * 100
+            last_vwap = float(vwap.iloc[-1])
+            vwap_dist = ((close.iloc[-1] - last_vwap) / last_vwap) * 100 if last_vwap else 0.0
             
             # EMAs
             ema9 = close.ewm(span=9, adjust=False).mean()

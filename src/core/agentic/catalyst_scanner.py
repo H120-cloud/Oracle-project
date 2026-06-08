@@ -66,7 +66,7 @@ CATALYST_STRENGTH: dict[CatalystType, float] = {
 
 def classify_catalyst(headline: str) -> tuple[CatalystType, float]:
     """Classify a news headline into a catalyst type and base strength."""
-    h = headline.lower()
+    h = (headline or "").lower()
     for cat_type, keywords in CATALYST_KEYWORDS.items():
         for kw in keywords:
             if kw in h:

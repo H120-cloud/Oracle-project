@@ -133,7 +133,7 @@ class Trading212Scraper:
                             change_pct=float(item.get("change", 0)),
                             volume=int(item.get("volume", 0)),
                             category="top_mover",
-                            reason=f"Trading 212 top mover: {item.get('change', 0):+.2f}%"
+                            reason=f"Trading 212 top mover: {item.get('change') or 0:+.2f}%"
                         ))
 
             except json.JSONDecodeError:

@@ -1193,12 +1193,30 @@ class PreNewsDetector:
         return updated
 
     def expire_stale(self, max_age_hours: int = 6):
-        """Expire anomalies older than max_age_hours that are still in WATCH."""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+        """Expire anomalies older than max_age_hours that are still in WATCH.
+        Also remove EXPIRED anomalies older than 24h past the cutoff to
+        prevent unbounded growth of the persistent store.
+        """
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=max_age_hours)
+        expired_tickers = []
         for ticker, anomaly in list(self._anomalies.items()):
             if anomaly.state == PreNewsState.PRE_NEWS_WATCH and anomaly.detected_at < cutoff:
                 anomaly.state = PreNewsState.EXPIRED
+                expired_tickers.append(ticker)
+        # Cleanup: remove EXPIRED anomalies very old (>24h past cutoff)
+        cleanup_cutoff = now - timedelta(hours=max_age_hours + 24)
+        removed = 0
+        for ticker, anomaly in list(self._anomalies.items()):
+            if anomaly.state == PreNewsState.EXPIRED and anomaly.detected_at < cleanup_cutoff:
+                del self._anomalies[ticker]
+                removed += 1
         self._persist_state()
+        if expired_tickers or removed:
+            logger.info(
+                "PreNewsDetector: expired %d stale anomalies, removed %d very old",
+                len(expired_tickers), removed,
+            )
 
     def explain_alert_decision(
         self,
@@ -1219,7 +1237,12 @@ class PreNewsDetector:
 
         # Already alerted and score hasn't improved enough
         if anomaly.alert_sent:
-            if anomaly.pre_news_suspicion_score < anomaly.last_alert_score + SCORE_RESEND_DELTA:
+            # V3.1: allow re-alert after 24h regardless of score delta
+            alert_age_hours = 0.0
+            alert_sent_at = getattr(anomaly, "alert_sent_at", None)
+            if alert_sent_at:
+                alert_age_hours = (now - alert_sent_at).total_seconds() / 3600
+            if alert_age_hours < 24 and anomaly.pre_news_suspicion_score < anomaly.last_alert_score + SCORE_RESEND_DELTA:
                 reasons.append("already_alerted_score_delta_too_small")
 
         # In-memory cooldown for same-scan duplicates

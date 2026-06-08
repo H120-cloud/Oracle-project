@@ -75,7 +75,7 @@ class NewsService:
 
     def _classify_sentiment(self, headline: str) -> Optional[str]:
         """Simple keyword-based sentiment analysis."""
-        headline_lower = headline.lower()
+        headline_lower = (headline or "").lower()
 
         positive_words = ['beat', 'beats', 'surge', 'surges', 'rally', 'rallies', 'gain', 'gains',
                          'jump', 'jumps', 'soar', 'soars', 'bull', 'bullish', 'upgrade', 'upgrades',

@@ -25,7 +25,7 @@ def _normalize_headline(headline: str) -> str:
     - Remove " | TICKER Stock News" suffix
     - Collapse multiple spaces
     """
-    h = headline.lower().strip()
+    h = (headline or "").lower().strip()
     h = re.sub(r"\s*\|\s*[a-z]{1,5}\s+stock\s+news\s*$", "", h, flags=re.IGNORECASE)
     h = re.sub(r"\s+", " ", h)
     return h

@@ -251,9 +251,9 @@ def _format_analysis(data: dict) -> str:
     if vp:
         lines.append("")
         lines.append("<b>Volume Profile</b>")
-        lines.append(f"POC: ${vp.get('poc', 0):.2f}")
-        lines.append(f"VAH: ${vp.get('vah', 0):.2f}")
-        lines.append(f"VAL: ${vp.get('val', 0):.2f}")
+        lines.append(f"POC: ${vp.get('poc') or 0:.2f}")
+        lines.append(f"VAH: ${vp.get('vah') or 0:.2f}")
+        lines.append(f"VAL: ${vp.get('val') or 0:.2f}")
         lines.append(f"Support zones: {vp.get('support_count', 0)}")
         lines.append(f"Resistance zones: {vp.get('resistance_count', 0)}")
 
@@ -263,9 +263,9 @@ def _format_analysis(data: dict) -> str:
         lines.append("")
         lines.append("<b>Regime</b>")
         lines.append(f"State: {regime.get('regime', 'unknown')}")
-        lines.append(f"ADX: {regime.get('adx', 0):.1f}")
-        lines.append(f"ATR%: {regime.get('atr_pct', 0):.2f}")
-        lines.append(f"Strength: {regime.get('strength_multiplier', 0):.2f}x")
+        lines.append(f"ADX: {regime.get('adx') or 0:.1f}")
+        lines.append(f"ATR%: {regime.get('atr_pct') or 0:.2f}")
+        lines.append(f"Strength: {regime.get('strength_multiplier') or 0:.2f}x")
 
     # Stage
     stage = data.get("stage")
@@ -273,7 +273,7 @@ def _format_analysis(data: dict) -> str:
         lines.append("")
         lines.append("<b>Stage</b>")
         lines.append(f"Stage: {stage.get('stage', 'unknown')}")
-        lines.append(f"Confidence: {stage.get('confidence', 0):.1f}%")
+        lines.append(f"Confidence: {stage.get('confidence') or 0:.1f}%")
         chars = stage.get("characteristics", [])
         if chars:
             lines.append(f"Characteristics: {', '.join(str(c) for c in chars)}")
@@ -283,15 +283,15 @@ def _format_analysis(data: dict) -> str:
     if flow:
         lines.append("")
         lines.append("<b>Order Flow</b>")
-        buy_ratio = flow.get("aggressive_buy_ratio", 0)
-        sell_ratio = flow.get("aggressive_sell_ratio", 0)
-        signal = flow.get("signal", "neutral")
-        imb = flow.get("bid_ask_imbalance", 0)
+        buy_ratio = flow.get("aggressive_buy_ratio") or 0
+        sell_ratio = flow.get("aggressive_sell_ratio") or 0
+        signal = flow.get("signal") or "neutral"
+        imb = flow.get("bid_ask_imbalance") or 0
         lines.append(f"Buy pressure: {buy_ratio * 100:.1f}%")
         lines.append(f"Sell pressure: {sell_ratio * 100:.1f}%")
         lines.append(f"Signal: {signal.upper()} (imbalance {imb:.2f})")
-        lb = flow.get("large_order_buy_volume", 0)
-        ls = flow.get("large_order_sell_volume", 0)
+        lb = flow.get("large_order_buy_volume") or 0
+        ls = flow.get("large_order_sell_volume") or 0
         if lb or ls:
             lines.append(f"Large orders — Buy: {lb:,.0f}  Sell: {ls:,.0f}")
     else:
@@ -312,12 +312,12 @@ def _format_orderflow(data: dict) -> str:
     if not flow:
         return f"<b>{ticker}</b>\n\nNo order flow data available."
 
-    buy_ratio = flow.get("aggressive_buy_ratio", 0)
-    sell_ratio = flow.get("aggressive_sell_ratio", 0)
-    signal = flow.get("signal", "neutral")
-    imb = flow.get("bid_ask_imbalance", 0)
-    lb = flow.get("large_order_buy_volume", 0)
-    ls = flow.get("large_order_sell_volume", 0)
+    buy_ratio = flow.get("aggressive_buy_ratio") or 0
+    sell_ratio = flow.get("aggressive_sell_ratio") or 0
+    signal = flow.get("signal") or "neutral"
+    imb = flow.get("bid_ask_imbalance") or 0
+    lb = flow.get("large_order_buy_volume") or 0
+    ls = flow.get("large_order_sell_volume") or 0
 
     lines = [
         f"<b>{ticker} Order Flow</b>",

@@ -107,7 +107,7 @@ def _parse_timestamp_with_confidence(text: str) -> tuple[Optional[datetime], str
 
 
 def _quick_sentiment(text: str) -> str:
-    lower = text.lower()
+    lower = (text or "").lower()
     bullish = any(k in lower for k in ("award", "contract", "approval", "partnership", "acquisition", "launch", "agreement"))
     bearish = any(k in lower for k in ("offering", "investigation", "lawsuit", "delisting", "bankruptcy", "downgrade"))
     if bullish and not bearish:

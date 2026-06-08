@@ -73,7 +73,7 @@ def _resolve_title_company_ticker(title: str) -> str | None:
 
 
 def _quick_sentiment(headline: str) -> str:
-    h = headline.lower()
+    h = (headline or "").lower()
     bull = sum(1 for kw in _BULLISH if kw in h)
     bear = sum(1 for kw in _BEARISH if kw in h)
     if bull > bear:

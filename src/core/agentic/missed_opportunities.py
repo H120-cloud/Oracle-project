@@ -14,31 +14,6 @@ from src.core.agentic.models import MissedOpportunity, MissedClass, AgenticCandi
 
 logger = logging.getLogger(__name__)
 
-# Screen universe — top movers are discovered from Yahoo Finance most active / gainers
-GAINER_SCREEN_COUNT = 50
-
-
-def _fetch_top_gainers() -> list[dict]:
-    """
-    Fetch today's top gainers via yfinance screener.
-    Returns list of {ticker, change_pct, price, volume, high, low}.
-    """
-    results = []
-    try:
-        import yfinance as yf
-        # yfinance doesn't have a built-in screener for gainers,
-        # so we use a broad approach: check known momentum tickers + Finviz
-        # For now, use the trending tickers endpoint
-        trending = yf.Tickers(
-            " ".join(getattr(yf, "get_trending", lambda: [])() or [])
-        )
-        # Fallback: manual approach
-    except Exception:
-        pass
-
-    return results
-
-
 class MissedOpportunityEngine:
     """Analyze end-of-day movers against what the system discovered."""
 

@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi import Header
 from pydantic import BaseModel, Field
 
-from src.services.frontend_auth import frontend_auth_service
+from src.services.frontend_auth import frontend_auth_service, RateLimitedError
 from src.services.telegram_service import send_telegram_alert
 
 router = APIRouter(prefix="/auth", tags=["frontend-auth"])
@@ -34,7 +34,14 @@ class SessionStatusResponse(BaseModel):
 
 @router.post("/request-code", response_model=RequestCodeResponse)
 async def request_frontend_code():
-    challenge = frontend_auth_service.create_challenge()
+    try:
+        challenge = frontend_auth_service.create_challenge()
+    except RateLimitedError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login-code requests; please wait before retrying.",
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
     message = (
         "<b>Oracle frontend login code</b>\n\n"
         f"Code: <code>{challenge.code}</code>\n"

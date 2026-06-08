@@ -277,7 +277,7 @@ class AlphaVantageProvider:
         try:
             df = self.client.intraday(ticker, interval="1min")
             if df.empty:
-                return {"price": 0.0, "change": 0.0, "change_pct": 0.0}
+                return None
             latest = df.iloc[-1]
             prev_close = df.iloc[0]["close"] if len(df) > 1 else latest["close"]
             price = latest["close"]
@@ -291,7 +291,7 @@ class AlphaVantageProvider:
             }
         except Exception as exc:
             logger.error("AlphaVantage get_live_quote failed for %s: %s", ticker, exc)
-            return {"price": 0.0, "change": 0.0, "change_pct": 0.0}
+            return None
 
     def get_regime_snapshot(self) -> dict:
         """Fetch all market regime features in one call sequence."""

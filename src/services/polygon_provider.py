@@ -180,7 +180,7 @@ class PolygonProvider:
 
         bars = self.get_ohlcv(ticker, period="1d", interval="5m", prepost=True)
         if not bars:
-            return {"price": 0, "previous_close": 0, "change": 0, "change_pct": 0}
+            return None  # no quote available — never report a fake $0
 
         latest = bars[-1]
         prev_close = 0.0

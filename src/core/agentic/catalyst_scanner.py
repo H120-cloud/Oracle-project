@@ -202,6 +202,9 @@ class CatalystScanner:
             try:
                 # Use the configured provider for real-time price data
                 quote = self._provider.get_live_quote(ticker)
+                if quote is None:
+                    self._bad_tickers.add(ticker)
+                    continue
                 price = float(quote.get("price", 0) or 0)
                 prev_close = float(quote.get("previous_close", 0) or 0)
                 volume = float(quote.get("volume", 0) or 0)

@@ -140,7 +140,7 @@ async def get_all_news(force_refresh: bool = Query(False)):
 async def get_news_quote(ticker: str):
     """Strategic quote endpoint for news surfaces without importing old analysis routes."""
     try:
-        return await asyncio.wait_for(
+        quote = await asyncio.wait_for(
             asyncio.to_thread(_run_live_quote, ticker),
             timeout=30.0,
         )
@@ -148,3 +148,6 @@ async def get_news_quote(ticker: str):
         raise HTTPException(status_code=504, detail="Live quote timed out; data provider is slow.")
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Live quote failed: {exc}")
+    if quote is None:
+        raise HTTPException(status_code=503, detail=f"Live quote unavailable for {ticker.upper()}")
+    return quote

@@ -460,6 +460,8 @@ class IntelligenceEngine:
                 return
 
             quote = self.provider.get_live_quote(ticker)
+            if quote is None:
+                return  # quote unavailable — leave intel price fields untouched
 
             intel.current_price = quote.get("price", 0.0)
             intel.previous_close = quote.get("previous_close", 0.0)

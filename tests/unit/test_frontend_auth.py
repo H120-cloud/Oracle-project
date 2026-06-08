@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -39,6 +40,92 @@ def test_auth_service_rejects_expired_code():
     service._now = lambda: now + timedelta(seconds=2)
 
     assert service.verify_code("111111") is None
+
+
+def test_verify_code_locks_out_after_max_failed_attempts():
+    from src.services.frontend_auth import FrontendAuthService
+
+    service = FrontendAuthService(
+        code_generator=lambda: "123456",
+        token_generator=lambda: "tok",
+        max_verify_attempts=3,
+    )
+    service.create_challenge()
+
+    for _ in range(3):
+        assert service.verify_code("000000") is None
+
+    # Locked out: even the correct code is rejected once attempts are exhausted.
+    assert service.verify_code("123456") is None
+
+
+def test_new_challenge_resets_verify_attempts():
+    from src.services.frontend_auth import FrontendAuthService
+
+    service = FrontendAuthService(
+        code_generator=lambda: "123456",
+        token_generator=lambda: "tok",
+        max_verify_attempts=3,
+    )
+    service.create_challenge()
+    for _ in range(3):
+        service.verify_code("000000")
+
+    # A fresh code resets the failed-attempt counter.
+    service.create_challenge()
+    assert service.verify_code("123456") == "tok"
+
+
+def test_create_challenge_rate_limited_after_max_requests():
+    from src.services.frontend_auth import FrontendAuthService, RateLimitedError
+
+    service = FrontendAuthService(
+        code_generator=lambda: "123456",
+        max_code_requests=3,
+        request_window_seconds=300,
+    )
+    for _ in range(3):
+        service.create_challenge()
+
+    with pytest.raises(RateLimitedError):
+        service.create_challenge()
+
+
+def test_create_challenge_allowed_after_window_elapses():
+    from src.services.frontend_auth import FrontendAuthService, RateLimitedError
+
+    clock = {"now": datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc)}
+    service = FrontendAuthService(
+        code_generator=lambda: "123456",
+        max_code_requests=2,
+        request_window_seconds=300,
+        now=lambda: clock["now"],
+    )
+    service.create_challenge()
+    service.create_challenge()
+    with pytest.raises(RateLimitedError):
+        service.create_challenge()
+
+    # Once the window passes, requests are allowed again.
+    clock["now"] = clock["now"] + timedelta(seconds=301)
+    assert service.create_challenge() is not None
+
+
+def test_request_code_route_returns_429_when_rate_limited(monkeypatch):
+    import asyncio
+
+    import src.api.routes.frontend_auth as fa
+    from src.services.frontend_auth import RateLimitedError
+    from fastapi import HTTPException
+
+    def _raise_rate_limited():
+        raise RateLimitedError(retry_after_seconds=42)
+
+    monkeypatch.setattr(fa.frontend_auth_service, "create_challenge", _raise_rate_limited)
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(fa.request_frontend_code())
+    assert excinfo.value.status_code == 429
 
 
 def test_frontend_auth_middleware_blocks_api_without_token():

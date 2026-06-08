@@ -70,7 +70,9 @@ def test_main_serves_spa_routes_without_exposing_api_fallback():
     assert 'app.mount("/assets"' in source
     assert '@app.get("/{full_path:path}", include_in_schema=False)' in source
     assert 'if full_path.startswith("api/")' in source
-    assert "return FileResponse(frontend_index)" in source
+    # The catch-all falls back to the SPA index. Match the call without pinning
+    # exact args (the response now also sets no-cache headers) to avoid brittleness.
+    assert "FileResponse(frontend_index" in source
 
 
 def test_app_startup_survives_missing_legacy_modules_when_flags_enabled(monkeypatch):

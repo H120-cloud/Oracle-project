@@ -1536,6 +1536,22 @@ async def _sec_intelligence_scan_loop():
         await asyncio.sleep(SEC_INTELLIGENCE_INTERVAL)
 
 
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro, name: str | None = None) -> asyncio.Task:
+    """Create a background task and keep a strong reference to it.
+
+    asyncio only holds weak references to tasks, so an untracked task can be
+    garbage-collected mid-flight. Registering here also lets the lifespan
+    cancel + drain every loop on shutdown instead of killing them abruptly.
+    """
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -1564,7 +1580,7 @@ async def lifespan(app: FastAPI):
 
     sim_task = None
     if settings.legacy_outcome_simulator_enabled:
-        sim_task = asyncio.create_task(_outcome_simulator_loop())
+        sim_task = _spawn(_outcome_simulator_loop(), "outcome_simulator")
         logger.info("Background outcome simulator started (interval=%ds)", SIMULATOR_INTERVAL_SECONDS)
     else:
         logger.info("Background outcome simulator disabled by lean-mode flags")
@@ -1576,25 +1592,25 @@ async def lifespan(app: FastAPI):
     # Stagger background loops to avoid thundering-herd of quote requests
     async def _delayed_start(coro_factory, delay_sec: float, name: str):
         await asyncio.sleep(delay_sec)
-        asyncio.create_task(coro_factory())
+        _spawn(coro_factory(), name)
         logger.info("%s started (staggered +%.1fs)", name, delay_sec)
 
     if settings.watchlist_enabled:
-        asyncio.create_task(_watchlist_broadcast_loop())
+        _spawn(_watchlist_broadcast_loop(), "watchlist_broadcast")
         logger.info("Watchlist real-time broadcaster started")
     else:
         logger.info("Watchlist real-time broadcaster disabled by lean-mode flags")
 
     if settings.paper_trading_system_enabled:
-        asyncio.create_task(_delayed_start(_paper_trading_price_loop, 2.0, "Paper trading price updater"))
+        _spawn(_delayed_start(_paper_trading_price_loop, 2.0, "Paper trading price updater"))
     else:
         logger.info("Paper trading price updater disabled by lean-mode flags")
 
-    asyncio.create_task(_delayed_start(_pre_news_scan_loop, 4.0, "Pre-news volume anomaly scanner"))
+    _spawn(_delayed_start(_pre_news_scan_loop, 4.0, "Pre-news volume anomaly scanner"))
 
     # Start Telegram command polling (+1s)
-    asyncio.create_task(_delayed_start(telegram_command_polling_loop, 1.0, "Telegram command polling"))
-    asyncio.create_task(_delayed_start(telegram_outbox_sender_loop, 2.5, "Telegram outbox sender"))
+    _spawn(_delayed_start(telegram_command_polling_loop, 1.0, "Telegram command polling"))
+    _spawn(_delayed_start(telegram_outbox_sender_loop, 2.5, "Telegram outbox sender"))
 
     # Startup: initialize News Momentum Orchestrator
     global _news_momentum_orch
@@ -1632,21 +1648,21 @@ async def lifespan(app: FastAPI):
         logger.warning("Alpaca news stream init failed: %s", exc)
 
     # Start news momentum scan loop (+6s — after all other loops)
-    asyncio.create_task(_delayed_start(_news_momentum_scan_loop, 6.0, "News momentum scan loop"))
+    _spawn(_delayed_start(_news_momentum_scan_loop, 6.0, "News momentum scan loop"))
 
     # Start SEC EDGAR 8-K firehose — low-latency filing-driven catalysts
-    asyncio.create_task(_delayed_start(_sec_edgar_firehose_loop, 8.0, "SEC EDGAR 8-K firehose"))
+    _spawn(_delayed_start(_sec_edgar_firehose_loop, 8.0, "SEC EDGAR 8-K firehose"))
 
     # Start EOD review loop (runs daily at 21:30 UTC)
-    asyncio.create_task(_news_momentum_eod_review_loop())
+    _spawn(_news_momentum_eod_review_loop(), "news_momentum_eod_review")
     logger.info("News momentum EOD review loop scheduled (daily at 21:30 UTC)")
 
     # Start outcome resolver loop (every 30 min)
-    asyncio.create_task(_news_momentum_outcome_resolver_loop())
+    _spawn(_news_momentum_outcome_resolver_loop(), "news_momentum_outcome_resolver")
     logger.info("News momentum outcome resolver loop scheduled (every 30 min)")
 
     # Start ML retrain loop (weekly Sunday 02:00 UTC)
-    asyncio.create_task(_news_momentum_ml_retrain_loop())
+    _spawn(_news_momentum_ml_retrain_loop(), "news_momentum_ml_retrain")
     logger.info("News momentum ML retrain loop scheduled (weekly Sunday 02:00 UTC)")
 
     # DISABLED: SEC Intelligence hourly scan loop (not actively used)
@@ -1655,18 +1671,18 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown — cancel only the tasks we hold references to
-    if sim_task is not None:
-        try:
-            sim_task.cancel()
-        except Exception:
-            pass
+    # Shutdown — cancel and drain every background loop we spawned, so in-flight
+    # work is given a chance to unwind instead of being killed abruptly.
+    logger.info("Oracle V5 shutting down — cancelling %d background task(s)", len(_background_tasks))
+    for task in list(_background_tasks):
+        task.cancel()
+    if _background_tasks:
+        await asyncio.gather(*_background_tasks, return_exceptions=True)
     if _alpaca_news_stream is not None:
         try:
             _alpaca_news_stream.stop()
         except Exception:
             pass
-    # DISABLED: agentic_outcome_task.cancel()
     logger.info("Oracle V5 shutting down")
 
 
@@ -1682,7 +1698,11 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    # Auth is a bearer token in the Authorization header and the frontend is
+    # served same-origin from frontend/dist/, so credentialed CORS is never
+    # needed. allow_origins=["*"] + allow_credentials=True is invalid per the
+    # CORS spec (Starlette would reflect any Origin); keep credentials off.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

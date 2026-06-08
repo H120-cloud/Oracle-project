@@ -40,13 +40,10 @@ def save_json_file(path: str | Path, data: Any, indent: int = 2) -> bool:
     except Exception as exc:
         logger.error("Failed to save JSON to %s: %s", path, exc)
         return False
-    finally:
-        # Clean up stale lock file (optional — filelock handles this)
-        try:
-            if lock_file.exists():
-                lock_file.unlink()
-        except OSError:
-            pass
+    # NOTE: deliberately do NOT delete lock_file. filelock holds the lock on the
+    # open file handle; unlinking the path lets a later process create a new inode
+    # for the same path and acquire the lock concurrently, defeating mutual
+    # exclusion. The empty .lock marker is meant to persist.
 
 
 def load_json_file(path: str | Path, default: Any = None) -> Any:
@@ -66,9 +63,4 @@ def load_json_file(path: str | Path, default: Any = None) -> Any:
     except Exception as exc:
         logger.warning("Failed to load JSON from %s: %s", path, exc)
         return default
-    finally:
-        try:
-            if lock_file.exists():
-                lock_file.unlink()
-        except OSError:
-            pass
+    # NOTE: do NOT delete lock_file here — see save_json_file for why.

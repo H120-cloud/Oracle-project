@@ -43,9 +43,10 @@ _MIN_GLOBAL_BACKOFF = 15.0  # seconds — Yahoo Finance needs breathing room
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Detect if an exception is a rate-limit / 429 error from yfinance."""
     msg = str(exc).lower()
+    # Match specific 429 / rate-limit signals only. Avoid bare "limit"/"frequency"
+    # which match unrelated errors and would trigger a global quote backoff.
     return any(k in msg for k in [
-        "too many requests", "rate limited", "429", "too many",
-        "frequency", "limit", "throttle",
+        "too many requests", "rate limit", "rate limited", "429", "throttle",
     ])
 
 
@@ -94,7 +95,7 @@ def _get_live_quote_with_retry(provider, ticker: str, max_retries: int = 3) -> d
                 raise
 
     logger.error("get_live_quote failed for %s after %d retries", ticker, max_retries)
-    return {"price": 0, "previous_close": 0, "change": 0, "change_pct": 0}
+    return None
 
 # Default momentum tickers to scan when no screener is available
 # NOTE: For penny stocks under $2, use Finviz scanner (finviz-under2) instead of this list
@@ -263,8 +264,12 @@ class YFinanceProvider(IMarketDataProvider):
         cache.set(cache_key, bars, ttl)
         return bars
 
-    def get_live_quote(self, ticker: str) -> dict:
-        """Fast live quote with caching + rate-limit retry."""
+    def get_live_quote(self, ticker: str) -> Optional[dict]:
+        """Fast live quote with caching + rate-limit retry.
+
+        Returns ``None`` when no quote could be fetched — callers must treat a
+        ``None`` result as "unavailable" rather than a price of 0.
+        """
         cache = get_cache()
         cache_key = f"quote:{ticker}"
         cached = cache.get(cache_key)
@@ -762,8 +767,8 @@ class FinnhubProvider(IMarketDataProvider):
             logger.error("get_ohlcv [%s] failed: %s", ticker, exc)
             return []
 
-    def get_live_quote(self, ticker: str) -> dict:
-        """Fast live quote from Finnhub."""
+    def get_live_quote(self, ticker: str) -> Optional[dict]:
+        """Fast live quote from Finnhub. Returns ``None`` when unavailable."""
         cache = get_cache()
         cache_key = f"quote:{ticker}"
         cached = cache.get(cache_key)
@@ -795,7 +800,7 @@ class FinnhubProvider(IMarketDataProvider):
             return result
         except Exception as exc:
             logger.warning("get_live_quote [%s] failed: %s", ticker, exc)
-            return {"price": 0, "previous_close": 0, "change": 0, "change_pct": 0}
+            return None
 
     def compute_dip_features(self, ticker: str) -> Optional[DipFeatures]:
         """Compute DipFeatures from intraday data."""
@@ -893,8 +898,11 @@ def get_market_data_provider() -> IMarketDataProvider:
     Falls back to YFinanceProvider if the configured provider fails
     to initialize (e.g. invalid Alpaca credentials, missing Finnhub key).
     """
-    import os
-    provider = os.getenv("MARKET_DATA_PROVIDER", "yfinance").lower()
+    # Read through pydantic settings so a provider configured only in .env is
+    # honored (os.getenv would miss .env-only values). Settings also covers real
+    # environment variables, so this is strictly broader than the old os.getenv.
+    from src.config import get_settings
+    provider = (get_settings().market_data_provider or "yfinance").lower()
     cache_key = provider
 
     with _PROVIDER_CACHE_LOCK:

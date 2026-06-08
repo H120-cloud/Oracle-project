@@ -102,6 +102,9 @@ def _run_analysis(ticker: str) -> dict:
 
     try:
         quote = provider.get_live_quote(ticker)
+        if quote is None:
+            result["error"] = "Quote unavailable"
+            return result
         result["price"] = quote.get("price", 0)
         result["quote"] = quote
     except Exception as e:

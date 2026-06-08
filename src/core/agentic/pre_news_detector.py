@@ -203,7 +203,7 @@ def _classify_price_behaviour(bars: list, quote: dict) -> PriceBehaviourDetail:
     if not bars or len(bars) < 5:
         return PriceBehaviourDetail(behaviour=PriceBehaviour.QUIET_ACCUMULATION, score=30)
 
-    price = float(quote.get("price", 0) or 0)
+    price = float((quote or {}).get("price", 0) or 0)
     prev_close = float(quote.get("previous_close", 0) or 0)
     open_price = float(quote.get("open", 0) or 0)
     day_high = float(quote.get("day_high", 0) or 0)
@@ -1100,7 +1100,7 @@ class PreNewsDetector:
             # Fetch current price
             try:
                 quote = self._provider.get_live_quote(ticker)
-                price = float(quote.get("price", 0) or 0)
+                price = float((quote or {}).get("price", 0) or 0)
                 if price <= 0:
                     if backfilled:
                         updated += 1
@@ -1146,7 +1146,7 @@ class PreNewsDetector:
                     continue
                 try:
                     quote = self._provider.get_live_quote(ticker)
-                    price = float(quote.get("price", 0) or 0)
+                    price = float((quote or {}).get("price", 0) or 0)
                     if price <= 0:
                         continue
                     vwap = None
@@ -1168,7 +1168,7 @@ class PreNewsDetector:
             for ticker in list(self._anomalies.keys()):
                 try:
                     quote = self._provider.get_live_quote(ticker)
-                    price = float(quote.get("price", 0) or 0)
+                    price = float((quote or {}).get("price", 0) or 0)
                     if price <= 0:
                         continue
                     vwap = None
@@ -1425,7 +1425,7 @@ class PreNewsDetector:
         for ticker in tickers:
             try:
                 quote = self._provider.get_live_quote(ticker)
-                price = float(quote.get("price", 0) or 0)
+                price = float((quote or {}).get("price", 0) or 0)
                 if price <= 0:
                     continue
 
@@ -1749,7 +1749,7 @@ class PreNewsDetector:
 
         # 1. Get quote
         quote = self._provider.get_live_quote(ticker)
-        price = float(quote.get("price", 0) or 0)
+        price = float((quote or {}).get("price", 0) or 0)
         if price <= 0:
             return None
 

@@ -2968,8 +2968,18 @@ class NewsMomentumOrchestrator:
         try:
             import yfinance as yf
             import pandas as pd
-            ticker = yf.Ticker(c.ticker)
-            hist = ticker.history(period="5d", interval="1h")
+
+            def _fetch_hist():
+                return yf.Ticker(c.ticker).history(period="5d", interval="1h")
+
+            # Run the blocking yfinance call OFF the event loop with a hard
+            # timeout. Inline, it froze the entire async server for minutes when
+            # yfinance was throttled (e.g. on cloud hosts like Railway).
+            try:
+                hist = await asyncio.wait_for(asyncio.to_thread(_fetch_hist), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.debug("Post-news price fetch timed out for %s", c.ticker)
+                return None
             if hist.empty:
                 return None
 

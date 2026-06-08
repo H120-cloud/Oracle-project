@@ -196,7 +196,9 @@ async def _pre_news_scan_loop():
                 "PreNewsScan startup: refreshed news for %d persisted anomalies",
                 len(confirmed),
             )
-        startup_detector.refresh_tracked_prices()
+        # refresh_tracked_prices() is sync and makes blocking provider calls;
+        # run it off the event loop so a throttled provider can't stall startup.
+        await asyncio.to_thread(startup_detector.refresh_tracked_prices)
     except Exception as exc:
         logger.debug("PreNewsScan startup refresh failed: %s", exc)
 

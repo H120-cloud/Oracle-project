@@ -156,7 +156,10 @@ def test_strategic_news_quote_endpoint_replaces_analysis_live_quote():
 def test_news_momentum_ticker_enrichment_uses_unvalidated_finviz_discovery():
     main_text = Path("src/main.py").read_text(encoding="utf-8")
 
-    assert "fetch_finviz_top_gainer_tickers(validate=False)" in main_text
-    assert "fetch_finviz_under2_high_volume_tickers(validate=False)" in main_text
-    assert "fetch_finviz_top_gainer_tickers(validate=True)" not in main_text
-    assert "fetch_finviz_under2_high_volume_tickers(validate=True)" not in main_text
+    # Discovery must use validate=False (skip yfinance validation). The calls are
+    # offloaded via asyncio.to_thread, so assert the function + kwarg rather than
+    # the exact call syntax.
+    assert "fetch_finviz_top_gainer_tickers, validate=False" in main_text
+    assert "fetch_finviz_under2_high_volume_tickers, validate=False" in main_text
+    assert "fetch_finviz_top_gainer_tickers, validate=True" not in main_text
+    assert "fetch_finviz_under2_high_volume_tickers, validate=True" not in main_text

@@ -1231,13 +1231,15 @@ async def _news_momentum_scan_loop():
                         # Discovery should not depend on yfinance validation.
                         # A transient quote/history failure can wrongly shrink
                         # the ticker-specific enrichment universe.
-                        gainers = fetch_finviz_top_gainer_tickers(validate=False)
+                        # Sync httpx.get under the hood — run off the loop so a
+                        # slow Finviz response can't freeze the async server.
+                        gainers = await asyncio.to_thread(fetch_finviz_top_gainer_tickers, validate=False)
                         _add_hot_tickers(gainers)
                     except Exception as exc:
                         _source_health.record_parse_error("FinvizTickerUniverse", now=datetime.now(timezone.utc))
                         logger.warning("NewsMomentum: Finviz top-gainer ticker discovery failed: %s", exc)
                     try:
-                        under2 = fetch_finviz_under2_high_volume_tickers(validate=False)
+                        under2 = await asyncio.to_thread(fetch_finviz_under2_high_volume_tickers, validate=False)
                         _add_hot_tickers(under2)
                     except Exception as exc:
                         _source_health.record_parse_error("FinvizTickerUniverse", now=datetime.now(timezone.utc))

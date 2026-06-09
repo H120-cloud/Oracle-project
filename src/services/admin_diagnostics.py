@@ -544,6 +544,20 @@ def export_diagnostics(kind: str, fmt: str = "csv", *, filters: Optional[dict] =
     }
 
 
+# ── Rocket shadow model status ──────────────────────────────────────────────
+
+def rocket_shadow_status() -> dict:
+    """Live availability status for the Rocket CatBoost shadow scorer.
+
+    Read-only telemetry: reports whether the model loaded (file present AND
+    catboost importable), its version, the last load error if any, and how many
+    shadow predictions have been logged. Never gates alerts. A fresh scorer is
+    used so the status reflects current state (model may have just been seeded).
+    """
+    from src.core.agentic.rocket_model_shadow import RocketModelShadowScorer
+    return RocketModelShadowScorer().status()
+
+
 # ── Report catalog (allowlisted file downloads) ─────────────────────────────
 
 def docs_dir() -> Path:

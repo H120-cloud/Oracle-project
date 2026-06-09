@@ -1684,6 +1684,18 @@ async def lifespan(app: FastAPI):
         seeded = seed_agentic_data_dir()
         if seeded:
             logger.info("Seeded %d baseline artifact(s): %s", len(seeded), seeded)
+
+        # Explicit visibility for the Rocket shadow model specifically.
+        from src.utils.data_paths import agentic_path as _agentic_path, default_seed_dir as _seed_dir
+        _rocket_name = "rocket_catboost_baseline_shadow.joblib"
+        if _rocket_name in (seeded or []):
+            logger.info("Rocket shadow model: seeded onto volume from image")
+        elif _agentic_path(_rocket_name).exists():
+            logger.info("Rocket shadow model: already present on volume (not overwritten)")
+        elif not (_seed_dir() / _rocket_name).exists():
+            logger.warning("Rocket shadow model: MISSING — no seed artifact baked into image")
+        else:
+            logger.warning("Rocket shadow model: not on volume despite seed present — check seeding")
     except Exception as exc:
         logger.warning("Baseline seeding skipped: %s", exc)
 

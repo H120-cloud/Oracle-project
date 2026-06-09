@@ -55,6 +55,12 @@ build/
 *.parquet
 *.joblib
 
+# Baseline seed artifacts must ship in the image despite the ignores above
+# (they are copied onto the persistent volume on first boot via
+# seed_agentic_data_dir). Keep this AFTER the global ignores so it wins.
+!seed/
+!seed/**
+
 # Local tooling
 *.ps1
 *.bat

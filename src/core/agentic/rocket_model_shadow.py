@@ -237,10 +237,12 @@ class RocketModelShadowScorer:
         self.predictions_path = Path(predictions_path)
         self._artifact: Optional[Mapping[str, Any]] = artifact
         self._load_attempted = artifact is not None
+        self._last_load_error: Optional[str] = None
 
     @property
     def artifact(self) -> Optional[Mapping[str, Any]]:
         if not self.enabled:
+            self._last_load_error = "shadow scorer disabled (ROCKET_MODEL_SHADOW_ENABLED)"
             return None
         if self._artifact is not None:
             return self._artifact
@@ -248,11 +250,15 @@ class RocketModelShadowScorer:
             return None
         self._load_attempted = True
         if not self.model_path.exists():
+            self._last_load_error = f"model file not found: {self.model_path}"
             logger.info("Rocket shadow model unavailable: %s does not exist", self.model_path)
             return None
         try:
             self._artifact = joblib.load(self.model_path)
+            self._last_load_error = None
         except Exception as exc:
+            # e.g. ModuleNotFoundError: No module named 'catboost'
+            self._last_load_error = f"{type(exc).__name__}: {exc}"
             logger.warning("Rocket shadow model load failed: %s", exc)
             self._artifact = None
         return self._artifact
@@ -261,6 +267,42 @@ class RocketModelShadowScorer:
         artifact = self.artifact or {}
         created = artifact.get("created_at") or artifact.get("model_version") or "unknown"
         return f"rocket_catboost_baseline_shadow:{created}"
+
+    def status(self) -> dict[str, Any]:
+        """Read-only operational status for the diagnostics dashboard.
+
+        Triggers a lazy load so ``model_loaded`` reflects whether the model can
+        actually be used (file present AND its dependencies importable, e.g.
+        catboost). Never affects gating — this is telemetry only.
+        """
+        artifact = self.artifact  # lazy load; populates _last_load_error on failure
+        loaded = artifact is not None
+        count = 0
+        last_at: Optional[str] = None
+        try:
+            if self.predictions_path.exists():
+                last_line = None
+                for line in self.predictions_path.read_text(encoding="utf-8").splitlines():
+                    stripped = line.strip()
+                    if stripped:
+                        count += 1
+                        last_line = stripped
+                if last_line:
+                    try:
+                        last_at = json.loads(last_line).get("logged_at")
+                    except Exception:
+                        last_at = None
+        except Exception as exc:
+            logger.debug("Rocket shadow status: predictions read failed: %s", exc)
+        return {
+            "enabled": self.enabled,
+            "model_loaded": loaded,
+            "model_path": str(self.model_path),
+            "model_version": self.model_version() if loaded else None,
+            "last_load_error": self._last_load_error,
+            "prediction_count": count,
+            "last_prediction_at": last_at,
+        }
 
     def _prepare_features(self, row: Mapping[str, Any]) -> pd.DataFrame:
         artifact = self.artifact or {}

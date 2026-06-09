@@ -63,6 +63,13 @@ def rocket_shadow(
     )
 
 
+@router.get("/rocket-shadow-status", summary="Rocket shadow model availability/status")
+def rocket_shadow_status():
+    """Whether the Rocket CatBoost shadow model loaded, its version, last load
+    error, and prediction counts. Read-only telemetry — never gates alerts."""
+    return ad.rocket_shadow_status()
+
+
 @router.get("/telegram-outbox", summary="Telegram outbox delivery diagnostics")
 def telegram_outbox(
     ticker: Optional[str] = _Ticker,

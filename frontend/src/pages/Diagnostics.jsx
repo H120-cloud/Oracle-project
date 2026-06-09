@@ -6,7 +6,8 @@ import { ArrowUpDown, Download, FileDown } from 'lucide-react'
 import {
   getNewsLatency, getRocketShadow, getTelegramOutbox,
   getSourceHealth, getBlockedAlerts, getFastWatchAlerts,
-  getReports, getScraperSpeedTest, downloadAdminFile, dataDownloadUrl, reportDownloadUrl,
+  getReports, getRocketShadowStatus, getScraperSpeedTest,
+  downloadAdminFile, dataDownloadUrl, reportDownloadUrl,
 } from '../api_admin'
 
 const TABS = [
@@ -420,8 +421,36 @@ function NewsLatencyTab() {
   )
 }
 
+function RocketModelStatusBanner() {
+  const { loading, error, data } = useDiagnostics(getRocketShadowStatus, {})
+  if (loading) return <div className="mb-4 text-sm text-gray-400">Checking Rocket model status…</div>
+  if (error) return <div className="mb-4 text-sm text-red-400">Rocket model status unavailable: {error}</div>
+  if (!data) return null
+  const loaded = data.model_loaded
+  return (
+    <div className={`mb-4 rounded-lg border p-3 ${loaded ? 'border-green-500/30 bg-green-500/10' : 'border-red-500/30 bg-red-500/10'}`}>
+      <div className={`text-sm font-semibold ${loaded ? 'text-green-400' : 'text-red-400'}`}>
+        {loaded ? 'Rocket model active (shadow mode — does not send alerts)' : 'Rocket model not loaded'}
+      </div>
+      {loaded ? (
+        <div className="mt-1 text-xs text-gray-400">
+          {data.model_version} · {data.prediction_count} predictions logged
+          {data.last_prediction_at ? ` · last ${fmtTime(data.last_prediction_at)}` : ''}
+        </div>
+      ) : (
+        <div className="mt-1 text-xs text-gray-400">
+          Reason: <span className="text-red-300">{data.last_load_error || 'unknown'}</span>
+          <span className="ml-2 text-gray-500 break-all">({data.model_path})</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RocketShadowTab() {
   return (
+    <>
+    <RocketModelStatusBanner />
     <DiagnosticsTab
       fetcher={getRocketShadow} columns={ROCKET_COLUMNS} csvName="rocket_shadow.csv" downloadKind="rocket-shadow"
       statusOptions={['HIGH', 'MEDIUM', 'LOW']} sourceLabel="Pipeline"
@@ -433,6 +462,7 @@ function RocketShadowTab() {
         </div>
       )}
     />
+    </>
   )
 }
 

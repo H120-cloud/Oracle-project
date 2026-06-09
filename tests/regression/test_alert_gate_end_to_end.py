@@ -308,6 +308,21 @@ def test_blocked_candidate_latency_traced_once_per_reason(orch, monkeypatch):
     assert len(traced) == 1, f"blocked candidate traced {len(traced)}x; expected 1"
 
 
+def test_rocket_shadow_scorer_never_affects_telegram_gate(orch, monkeypatch):
+    """Rocket shadow is telemetry only — the Telegram gate must never consult it.
+    Make any call to the shadow scorer blow up; the gate decision must be
+    unaffected (still a clean pass for an unambiguous winner)."""
+    from unittest.mock import MagicMock
+
+    boom = MagicMock(side_effect=AssertionError("gate must not touch the shadow scorer"))
+    monkeypatch.setattr(
+        orch, "_rocket_shadow_scorer",
+        MagicMock(predict_candidate=boom, predict_and_log_candidate=boom),
+    )
+    c = _make_candidate()  # default = unambiguous winner
+    assert orch._should_send_telegram(c, adaptive={}) is True
+
+
 def test_bad_ticker_candidate_is_deactivated_to_stop_refresh(orch, monkeypatch):
     """bad_ticker is a terminal block (persistent bad-list), so the candidate
     must be deactivated — the ~45s refresh loop skips inactive candidates, so it

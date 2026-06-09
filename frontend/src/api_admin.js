@@ -17,6 +17,7 @@ export const getSourceHealth = (p) => fetchJSON(`${BASE}/admin/source-health${qs
 export const getBlockedAlerts = (p) => fetchJSON(`${BASE}/admin/blocked-alerts${qs(p)}`);
 export const getFastWatchAlerts = (p) => fetchJSON(`${BASE}/admin/fast-watch-alerts${qs(p)}`);
 export const getReports = () => fetchJSON(`${BASE}/admin/reports`);
+export const getRocketShadowStatus = () => fetchJSON(`${BASE}/admin/rocket-shadow-status`);
 
 // Live scraper speed probe — runs the real fetches, can take up to ~timeout s.
 export const getScraperSpeedTest = (timeout = 15) =>

@@ -33,6 +33,8 @@ NAME_MAP_CACHE = DATA_DIR / "company_name_ticker_map.json"
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_USER_AGENT = "Oracle research oracle@example.com"
 CACHE_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 days
+# Bump when normalize_name changes so stale on-disk caches rebuild automatically.
+_CACHE_VERSION = 2
 
 # Corporate suffixes stripped during normalization (so "Apple Inc" == "Apple").
 _SUFFIXES = re.compile(
@@ -47,6 +49,8 @@ def normalize_name(name: str) -> str:
     if not name:
         return ""
     n = name.lower()
+    # Strip SEC state-of-incorporation suffix, e.g. "qualcomm inc/de" -> "qualcomm inc".
+    n = re.sub(r"/[a-z]{2,3}\b", " ", n)
     n = re.sub(r"[.,&/()'\"]", " ", n)
     n = _SUFFIXES.sub(" ", n)
     n = re.sub(r"\s+", " ", n).strip()
@@ -102,7 +106,12 @@ class CompanyNameResolver:
         try:
             if (time.time() - NAME_MAP_CACHE.stat().st_mtime) > CACHE_MAX_AGE_SECONDS:
                 return False
-            self._map = json.loads(NAME_MAP_CACHE.read_text())
+            raw = json.loads(NAME_MAP_CACHE.read_text())
+            # Old caches were a flat {name: ticker} dict with no version — reject
+            # them so they rebuild with the current normalization.
+            if not isinstance(raw, dict) or raw.get("version") != _CACHE_VERSION:
+                return False
+            self._map = raw.get("map") or {}
             self._index = None
             return bool(self._map)
         except Exception:
@@ -126,7 +135,7 @@ class CompanyNameResolver:
             self._index = None
             try:
                 DATA_DIR.mkdir(parents=True, exist_ok=True)
-                NAME_MAP_CACHE.write_text(json.dumps(mapping))
+                NAME_MAP_CACHE.write_text(json.dumps({"version": _CACHE_VERSION, "map": mapping}))
             except Exception as exc:
                 logger.debug("CompanyNameResolver: cache save failed: %s", exc)
             logger.info("CompanyNameResolver: built %d name->ticker entries", len(mapping))

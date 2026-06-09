@@ -1,5 +1,5 @@
 // Admin Diagnostics API client (read-only).
-import { fetchJSON, BASE, getFrontendSessionToken } from './api_shared';
+import { fetchJSON, BASE, getFrontendSessionToken, handleAuthFailure } from './api_shared';
 
 function qs(params) {
   const sp = new URLSearchParams();
@@ -31,7 +31,10 @@ export async function downloadAdminFile(url, fallbackName) {
   const res = await fetch(url, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    handleAuthFailure(res.status, token);
+    throw new Error(`${res.status} ${res.statusText}`);
+  }
   const blob = await res.blob();
   const cd = res.headers.get('Content-Disposition') || '';
   const m = /filename="?([^"]+)"?/.exec(cd);

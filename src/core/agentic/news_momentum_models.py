@@ -219,6 +219,7 @@ class NewsSource(str, Enum):
     BUSINESS_WIRE = "businesswire"
     PR_NEWSWIRE = "prnewswire"
     SHARECAST = "sharecast"
+    INVESTING = "investing"
     ACCESSWIRE = "accesswire"
     NEWSFILE = "newsfile"
     COMPANY_PRESS = "company_press"

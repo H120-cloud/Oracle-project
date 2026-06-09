@@ -31,6 +31,18 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org"
 TIMEOUT = 10.0
+# Telegram rejects messages longer than 4096 chars with HTTP 400.
+TELEGRAM_MAX_LEN = 4096
+
+
+def _truncate_for_telegram(text: str) -> str:
+    """Clip over-length messages so a long alert is delivered (truncated) rather
+    than rejected with a 400 and lost. Applied to the raw text before HTML
+    sanitization so we never cut an escaped entity in half."""
+    if not text or len(text) <= TELEGRAM_MAX_LEN:
+        return text
+    marker = "\n…(truncated)"
+    return text[: TELEGRAM_MAX_LEN - len(marker)] + marker
 OUTBOX_DRAIN_INTERVAL_SECONDS = float(
     os.environ.get("TELEGRAM_OUTBOX_DRAIN_INTERVAL_SECONDS", "5") or 5
 )
@@ -108,6 +120,7 @@ async def _send_telegram_raw(text: str, parse_mode: str = "HTML") -> TelegramSen
         logger.debug("Telegram not configured - skipping alert")
         return TelegramSendResult(False, error="telegram_not_configured")
 
+    text = _truncate_for_telegram(text)
     if parse_mode == "HTML":
         text = _sanitize_html(text)
 
@@ -208,6 +221,7 @@ def send_telegram_alert_sync(
             )
         return False
 
+    text = _truncate_for_telegram(text)
     send_text = _sanitize_html(text) if parse_mode == "HTML" else text
     url = f"{TELEGRAM_API}/bot{token}/sendMessage"
     payload = {

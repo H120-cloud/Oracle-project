@@ -45,8 +45,9 @@ def test_frontend_app_exposes_only_strategic_pages():
 
 
 def test_frontend_public_api_does_not_export_legacy_helpers():
-    source = (ROOT / "frontend/src/api.js").read_text(encoding="utf-8")
-
-    assert "api_shared" in source
-    assert "api_strategic" in source
-    assert "api_legacy" not in source
+    # The legacy frontend API module (api_legacy.js) and the unused compat barrel
+    # (api.js) were removed as dead code — no page imported them. Pages now import
+    # the live modules (api_shared / api_strategic / api_admin) directly, so there
+    # is no surface left that could re-export legacy helpers.
+    assert not (ROOT / "frontend/src/api_legacy.js").exists()
+    assert not (ROOT / "frontend/src/api.js").exists()

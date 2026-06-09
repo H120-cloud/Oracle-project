@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { LockKeyhole, Send, ShieldCheck } from 'lucide-react'
+import { LockKeyhole, Send, ShieldCheck, AlertTriangle } from 'lucide-react'
 import {
   clearFrontendSessionToken,
   getFrontendSessionToken,
@@ -20,9 +20,13 @@ export default function FrontendAuthGate({ children }) {
   const [error, setError] = useState('')
   const [sending, setSending] = useState(false)
   const [verifying, setVerifying] = useState(false)
+  const [sessionExpired, setSessionExpired] = useState(false)
 
   useEffect(() => {
-    const handleExpired = () => setAuthenticated(false)
+    const handleExpired = () => {
+      setSessionExpired(true)
+      setAuthenticated(false)
+    }
     window.addEventListener('oracle-auth-expired', handleExpired)
     return () => window.removeEventListener('oracle-auth-expired', handleExpired)
   }, [])
@@ -84,6 +88,7 @@ export default function FrontendAuthGate({ children }) {
   const requestCode = async () => {
     setSending(true)
     setError('')
+    setSessionExpired(false)
     try {
       clearFrontendSessionToken()
       const result = await requestFrontendAuthCode()
@@ -104,6 +109,7 @@ export default function FrontendAuthGate({ children }) {
     try {
       const result = await verifyFrontendAuthCode(code.trim())
       setFrontendSessionToken(result.token)
+      setSessionExpired(false)
       setAuthenticated(true)
     } catch (err) {
       setError(err.message || 'Invalid or expired code')
@@ -124,6 +130,16 @@ export default function FrontendAuthGate({ children }) {
             <p className="text-sm text-gray-400">Telegram one-time code required</p>
           </div>
         </div>
+
+        {sessionExpired && (
+          <div
+            role="alert"
+            className="mt-5 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-200 animate-slide-in"
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>Your session expired. Please request a new code to sign back in.</span>
+          </div>
+        )}
 
         <button
           type="button"

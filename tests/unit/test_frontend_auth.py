@@ -210,3 +210,79 @@ def test_frontend_gate_validates_token_before_rendering_children():
     assert "checkingSession" in source
     assert "setAuthenticated(true)" in source
     assert "clearFrontendSessionToken()" in source
+
+
+def test_frontend_gate_surfaces_session_expiry_notice():
+    """On 401 the gate should explain the expiry, not silently bounce to login."""
+    source = open("frontend/src/components/FrontendAuthGate.jsx", encoding="utf-8").read()
+
+    assert "oracle-auth-expired" in source
+    assert "sessionExpired" in source
+    assert "session expired" in source.lower()
+
+
+def test_sessions_survive_service_restart_when_persisted(tmp_path):
+    """A token must remain valid after the process restarts.
+
+    The in-memory-only store invalidated every token on each backend restart
+    (uvicorn --reload, Railway crash-restart/redeploy), producing 401 bursts on
+    every panel. Persisting sessions to disk fixes this at the root.
+    """
+    from src.services.frontend_auth import FrontendAuthService
+
+    persist_path = tmp_path / "frontend_auth_sessions.json"
+
+    service = FrontendAuthService(
+        code_generator=lambda: "123456",
+        token_generator=lambda: "persisted-token",
+        persist_path=persist_path,
+    )
+    service.create_challenge()
+    token = service.verify_code("123456")
+    assert token == "persisted-token"
+
+    # Simulate a process restart: a brand-new instance reading the same file.
+    restarted = FrontendAuthService(persist_path=persist_path)
+    assert restarted.verify_token("persisted-token") is True
+
+
+def test_expired_sessions_are_not_restored(tmp_path):
+    from src.services.frontend_auth import FrontendAuthService
+
+    persist_path = tmp_path / "frontend_auth_sessions.json"
+    clock = {"now": datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc)}
+
+    service = FrontendAuthService(
+        code_generator=lambda: "123456",
+        token_generator=lambda: "stale-token",
+        session_ttl_seconds=900,
+        now=lambda: clock["now"],
+        persist_path=persist_path,
+    )
+    service.create_challenge()
+    assert service.verify_code("123456") == "stale-token"
+
+    # Advance past the session TTL, then "restart".
+    clock["now"] = clock["now"] + timedelta(seconds=901)
+    restarted = FrontendAuthService(
+        now=lambda: clock["now"],
+        persist_path=persist_path,
+    )
+    assert restarted.verify_token("stale-token") is False
+
+
+def test_revoked_token_does_not_return_after_restart(tmp_path):
+    from src.services.frontend_auth import FrontendAuthService
+
+    persist_path = tmp_path / "frontend_auth_sessions.json"
+    service = FrontendAuthService(
+        code_generator=lambda: "123456",
+        token_generator=lambda: "revoked-token",
+        persist_path=persist_path,
+    )
+    service.create_challenge()
+    token = service.verify_code("123456")
+    service.revoke_token(token)
+
+    restarted = FrontendAuthService(persist_path=persist_path)
+    assert restarted.verify_token("revoked-token") is False

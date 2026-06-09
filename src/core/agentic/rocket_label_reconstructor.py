@@ -406,11 +406,14 @@ def render_markdown_report(report: Dict[str, Any]) -> str:
 def write_reconstructed_exports(
     df: pd.DataFrame,
     *,
-    data_dir: Path | str = agentic_data_dir(),
+    data_dir: Path | str | None = None,
     docs_dir: Path | str = Path("docs"),
 ) -> Dict[str, str]:
     """Write separate reconstructed exports and their Markdown coverage report."""
-    output_dir = Path(data_dir)
+    # Resolve the data dir live (default None → current AGENTIC_DATA_DIR) rather
+    # than freezing it as a default-arg value at import time, which would ignore
+    # later env changes and risk writing to the production dir during tests.
+    output_dir = Path(data_dir) if data_dir is not None else agentic_data_dir()
     report_dir = Path(docs_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)

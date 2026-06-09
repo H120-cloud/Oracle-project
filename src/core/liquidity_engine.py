@@ -132,10 +132,10 @@ class LiquidityEngine:
         self._detect_sweeps(result, h, l, c, o, v, swing_highs, swing_lows)
 
         # 3. Fake breakout detection (Part 11)
-        self._detect_fake_breakouts(result, h, l, c, v, swing_highs, swing_lows)
+        self._detect_fake_breakouts(result, h, l, c, o, v, swing_highs, swing_lows)
 
         # 4. Inducement moves
-        self._detect_inducement(result, h, l, c, v, swing_highs, swing_lows)
+        self._detect_inducement(result, h, l, c, o, v, swing_highs, swing_lows)
 
         # Compute composite scores
         result.liquidity_score = self._compute_liquidity_score(result)
@@ -256,7 +256,7 @@ class LiquidityEngine:
                         ))
                         break
 
-    def _detect_fake_breakouts(self, result, h, l, c, v, swing_highs, swing_lows):
+    def _detect_fake_breakouts(self, result, h, l, c, o, v, swing_highs, swing_lows):
         """Part 11: Detect fake breakouts."""
         if len(c) < 15:
             return
@@ -328,7 +328,7 @@ class LiquidityEngine:
             result.breakout_level = prev_resistance
             result.breakout_volume_confirmed = True
 
-    def _detect_inducement(self, result, h, l, c, v, swing_highs, swing_lows):
+    def _detect_inducement(self, result, h, l, c, o, v, swing_highs, swing_lows):
         """Detect inducement moves (small false moves to trap traders)."""
         if len(c) < 15:
             return

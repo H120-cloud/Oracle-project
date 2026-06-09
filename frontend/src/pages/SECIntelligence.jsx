@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   secCandidates,
   secDilutionRisk,
@@ -17,18 +17,29 @@ export default function SECIntelligence() {
   const [scanTickers, setScanTickers] = useState('')
   const [scanResult, setScanResult] = useState(null)
 
+  // Latest-wins guard: rapid tab switches fire overlapping requests, so only
+  // the most recent one is allowed to write state. Bumped on unmount too, so a
+  // late response can't setState after the component is gone.
+  const reqIdRef = useRef(0)
+  useEffect(() => () => { reqIdRef.current += 1 }, [])
+
   const load = async (tabKey) => {
+    const reqId = ++reqIdRef.current
     setLoading(true)
     try {
-      if (tabKey === 'all') setData(await secCandidates({ limit: 200 }))
-      if (tabKey === 'dilution') setData(await secDilutionRisk(100))
-      if (tabKey === 'traps') setData(await secStructuralTraps(100))
-      if (tabKey === 'clean') setData(await secCleanWatchlist(100))
-      if (tabKey === 'serial') setData(await secSerialDiluters(100))
+      let result = []
+      if (tabKey === 'all') result = await secCandidates({ limit: 200 })
+      else if (tabKey === 'dilution') result = await secDilutionRisk(100)
+      else if (tabKey === 'traps') result = await secStructuralTraps(100)
+      else if (tabKey === 'clean') result = await secCleanWatchlist(100)
+      else if (tabKey === 'serial') result = await secSerialDiluters(100)
+      if (reqId !== reqIdRef.current) return
+      setData(Array.isArray(result) ? result : [])
     } catch (e) {
+      if (reqId !== reqIdRef.current) return
       console.error(e)
     } finally {
-      setLoading(false)
+      if (reqId === reqIdRef.current) setLoading(false)
     }
   }
 
@@ -92,7 +103,7 @@ export default function SECIntelligence() {
           <div className="text-right text-xs text-gray-400 space-y-0.5">
             <p>Candidates: <span className="text-white font-semibold">{stats.candidates_tracked}</span></p>
             <p>Outcomes: <span className="text-white font-semibold">{stats.outcomes_resolved}/{stats.outcomes_total}</span></p>
-            <p>Accuracy: <span className="text-white font-semibold">{(stats.structural_accuracy * 100).toFixed(1)}%</span></p>
+            <p>Accuracy: <span className="text-white font-semibold">{Number.isFinite(stats.structural_accuracy) ? (stats.structural_accuracy * 100).toFixed(1) : '0.0'}%</span></p>
           </div>
         )}
       </div>
@@ -138,8 +149,8 @@ export default function SECIntelligence() {
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {data.map((c) => {
-          const action = c.oracle_action.replace('_', ' ').toUpperCase()
-          const behavior = c.dilution_behavior.replace('_', ' ').toUpperCase()
+          const action = (c.oracle_action || '').replace('_', ' ').toUpperCase()
+          const behavior = (c.dilution_behavior || '').replace('_', ' ').toUpperCase()
           return (
             <div
               key={c.ticker}
@@ -211,7 +222,7 @@ function ScoreItem({ label, value, invert = false }) {
   return (
     <div className="bg-gray-950/40 rounded px-2 py-1.5 text-center">
       <div className="text-gray-500">{label}</div>
-      <div className={`font-bold ${color}`}>{value.toFixed(0)}</div>
+      <div className={`font-bold ${color}`}>{Number.isFinite(value) ? value.toFixed(0) : '—'}</div>
     </div>
   )
 }

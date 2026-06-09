@@ -15,6 +15,16 @@ export function clearFrontendSessionToken() {
   sessionStorage.removeItem(ORACLE_FRONTEND_SESSION_TOKEN);
 }
 
+// Shared 401 handling so every authed request path (fetchJSON, blob downloads)
+// reacts to an expired/invalid token identically: drop the dead token and let
+// the auth gate surface the "session expired" notice instead of failing silently.
+export function handleAuthFailure(status, token) {
+  if (status === 401 && token) {
+    clearFrontendSessionToken();
+    window.dispatchEvent(new CustomEvent('oracle-auth-expired'));
+  }
+}
+
 export async function fetchJSON(url, options = {}) {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, signal: externalSignal, ...rest } = options;
   const controller = new AbortController();
@@ -40,10 +50,7 @@ export async function fetchJSON(url, options = {}) {
       signal: controller.signal,
     });
     if (!res.ok) {
-      if (res.status === 401 && token) {
-        clearFrontendSessionToken();
-        window.dispatchEvent(new CustomEvent('oracle-auth-expired'));
-      }
+      handleAuthFailure(res.status, token);
       throw new Error(`${res.status} ${res.statusText}`);
     }
     return res.json();

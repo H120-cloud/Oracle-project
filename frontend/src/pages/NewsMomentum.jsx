@@ -343,7 +343,7 @@ export default function NewsMomentum() {
 
           {activeTab === 'expected' && (
             <div>
-              {candidates
+              {[...candidates]
                 .sort((a, b) => (b.expected_return_score || 0) - (a.expected_return_score || 0))
                 .slice(0, 20)
                 .map(c => (
@@ -354,7 +354,7 @@ export default function NewsMomentum() {
 
           {activeTab === 'continuation' && (
             <div>
-              {candidates
+              {[...candidates]
                 .sort((a, b) => (b.continuation_probability || 0) - (a.continuation_probability || 0))
                 .slice(0, 20)
                 .map(c => (
@@ -365,7 +365,7 @@ export default function NewsMomentum() {
 
           {activeTab === 'multiday' && (
             <div>
-              {candidates
+              {[...candidates]
                 .sort((a, b) => (b.multi_day_continuation_score || 0) - (a.multi_day_continuation_score || 0))
                 .slice(0, 20)
                 .map(c => (

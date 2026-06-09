@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Clock,
@@ -91,7 +91,15 @@ export default function TimingReview() {
     limit: 250,
   }), [ticker, label, source])
 
-  const load = async () => {
+  // Monotonic request id: each load bumps it, and only the response whose id
+  // still matches the latest is allowed to write state. This prevents a slow
+  // earlier request from overwriting a newer one (out-of-order responses) and
+  // invalidates any in-flight request once the component unmounts.
+  const reqIdRef = useRef(0)
+  useEffect(() => () => { reqIdRef.current += 1 }, [])
+
+  const load = useCallback(async () => {
+    const reqId = ++reqIdRef.current
     setLoading(true)
     setError('')
     try {
@@ -99,18 +107,23 @@ export default function TimingReview() {
         newsMomentumTimingReviews(params),
         newsMomentumTimingSummary(params),
       ])
+      if (reqId !== reqIdRef.current) return
       setRows(reviewData.items || [])
       setSummary(summaryData)
     } catch (e) {
+      if (reqId !== reqIdRef.current) return
       setError(e.message || 'Failed to load timing reviews')
     } finally {
-      setLoading(false)
+      if (reqId === reqIdRef.current) setLoading(false)
     }
-  }
-
-  useEffect(() => {
-    load()
   }, [params])
+
+  // Debounce filter-driven loads so typing a ticker doesn't fire a request per
+  // keystroke; the manual Refresh button calls load() directly (immediate).
+  useEffect(() => {
+    const timer = setTimeout(load, 300)
+    return () => clearTimeout(timer)
+  }, [load])
 
   const byLabel = summary?.by_label || {}
 

@@ -16,11 +16,24 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal, Optional
 
+from filelock import FileLock
+
 logger = logging.getLogger(__name__)
 
 from src.utils.data_paths import AGENTIC_DATA_DIR as DATA_DIR
 OUTBOX_FILE = DATA_DIR / "telegram_outbox.jsonl"
 MAX_ATTEMPTS = int(os.environ.get("TELEGRAM_OUTBOX_MAX_ATTEMPTS", "6") or 6)
+# Drop sent/dead-letter records older than this so the file can't grow without
+# bound (dedup still applies within the window).
+SENT_TTL_SECONDS = int(
+    os.environ.get("TELEGRAM_OUTBOX_SENT_TTL_SECONDS", str(7 * 24 * 3600)) or 7 * 24 * 3600
+)
+_LOCK_TIMEOUT = 10.0
+# 4xx client errors that will never succeed on retry. 429 (rate limit) is
+# deliberately excluded — it IS retryable via retry_after.
+_PERMANENT_ERRORS = {
+    "telegram_api_400", "telegram_api_401", "telegram_api_403", "telegram_api_404",
+}
 
 OutboxStatus = Literal["pending", "sent", "failed", "dead_letter"]
 
@@ -133,6 +146,29 @@ def save_outbox(records: Iterable[TelegramOutboxRecord], path: Path = OUTBOX_FIL
                 pass
 
 
+def _outbox_lock(path: Path) -> FileLock:
+    """Serialize the whole read-modify-write so concurrent enqueues/drains can't
+    clobber each other (lost update). Held only around fast disk ops — never
+    across a network send."""
+    return FileLock(str(path) + ".lock", timeout=_LOCK_TIMEOUT)
+
+
+def _is_permanent_error(error: str) -> bool:
+    return str(error or "") in _PERMANENT_ERRORS
+
+
+def _prune(records: Iterable["TelegramOutboxRecord"], now: datetime) -> list["TelegramOutboxRecord"]:
+    """Keep all in-flight records; drop sent/dead-letter ones past the TTL."""
+    kept: list[TelegramOutboxRecord] = []
+    for r in records:
+        if r.status in {"sent", "dead_letter"}:
+            created = r.created_at or now
+            if (now - created).total_seconds() > SENT_TTL_SECONDS:
+                continue
+        kept.append(r)
+    return kept
+
+
 def enqueue_alert(
     *,
     alert_id: str,
@@ -145,39 +181,40 @@ def enqueue_alert(
     priority: int = 5,
     path: Path = OUTBOX_FILE,
 ) -> TelegramOutboxRecord:
-    records = load_outbox(path)
-    existing = next((r for r in records if r.alert_id == alert_id), None)
-    delay = float(retry_after) if retry_after is not None else _backoff_seconds((existing.attempts + 1) if existing else 1)
-    next_retry = _now() + timedelta(seconds=delay)
-    if existing is not None:
-        if existing.status == "sent":
+    with _outbox_lock(path):
+        records = load_outbox(path)
+        existing = next((r for r in records if r.alert_id == alert_id), None)
+        delay = float(retry_after) if retry_after is not None else _backoff_seconds((existing.attempts + 1) if existing else 1)
+        next_retry = _now() + timedelta(seconds=delay)
+        if existing is not None:
+            if existing.status == "sent":
+                return existing
+            existing.message = message
+            existing.ticker = ticker or existing.ticker
+            existing.alert_type = alert_type or existing.alert_type
+            existing.status = "pending"
+            existing.last_error = last_error
+            existing.telegram_response = telegram_response
+            existing.next_retry_at = next_retry
+            existing.priority = min(existing.priority, priority)
+            save_outbox(records, path)
             return existing
-        existing.message = message
-        existing.ticker = ticker or existing.ticker
-        existing.alert_type = alert_type or existing.alert_type
-        existing.status = "pending"
-        existing.last_error = last_error
-        existing.telegram_response = telegram_response
-        existing.next_retry_at = next_retry
-        existing.priority = min(existing.priority, priority)
-        save_outbox(records, path)
-        return existing
 
-    record = TelegramOutboxRecord(
-        alert_id=alert_id,
-        ticker=ticker or "UNKNOWN",
-        alert_type=alert_type or "generic",
-        message=message,
-        status="pending",
-        attempts=0,
-        last_error=last_error,
-        next_retry_at=next_retry,
-        telegram_response=telegram_response,
-        priority=priority,
-    )
-    records.append(record)
-    save_outbox(records, path)
-    return record
+        record = TelegramOutboxRecord(
+            alert_id=alert_id,
+            ticker=ticker or "UNKNOWN",
+            alert_type=alert_type or "generic",
+            message=message,
+            status="pending",
+            attempts=0,
+            last_error=last_error,
+            next_retry_at=next_retry,
+            telegram_response=telegram_response,
+            priority=priority,
+        )
+        records.append(record)
+        save_outbox(records, path)
+        return record
 
 
 @dataclass
@@ -196,7 +233,8 @@ async def drain_pending(
     path: Path = OUTBOX_FILE,
 ) -> dict[str, int]:
     now = now or _now()
-    records = load_outbox(path)
+    with _outbox_lock(path):
+        records = load_outbox(path)
     eligible = [
         r for r in records
         if r.status in {"pending", "failed"} and (_parse_dt(r.next_retry_at) or now) <= now
@@ -204,7 +242,7 @@ async def drain_pending(
     eligible.sort(key=lambda r: (r.priority, r.created_at))
     stats = {"attempted": 0, "sent": 0, "failed": 0, "dead_letter": 0}
 
-    by_id = {r.alert_id: r for r in records}
+    updates: dict[str, TelegramOutboxRecord] = {}
     for record in eligible[:limit]:
         stats["attempted"] += 1
         record.attempts += 1
@@ -221,7 +259,9 @@ async def drain_pending(
         else:
             record.last_error = str(getattr(result, "error", "") or "send_failed")
             record.telegram_response = getattr(result, "response", None)
-            if record.attempts >= MAX_ATTEMPTS:
+            # Permanent 4xx (bad request / forbidden / not found) will never
+            # succeed — dead-letter immediately instead of burning all retries.
+            if _is_permanent_error(record.last_error) or record.attempts >= MAX_ATTEMPTS:
                 record.status = "dead_letter"
                 stats["dead_letter"] += 1
             else:
@@ -230,7 +270,12 @@ async def drain_pending(
                 delay = float(retry_after or _backoff_seconds(record.attempts))
                 record.next_retry_at = now + timedelta(seconds=delay)
                 stats["failed"] += 1
-        by_id[record.alert_id] = record
+        updates[record.alert_id] = record
 
-    save_outbox(by_id.values(), path)
+    # Re-load + merge under the lock so any alert enqueued WHILE we were awaiting
+    # the network send is preserved (no lost update), and prune stale records.
+    with _outbox_lock(path):
+        current = {r.alert_id: r for r in load_outbox(path)}
+        current.update(updates)
+        save_outbox(_prune(current.values(), now), path)
     return stats

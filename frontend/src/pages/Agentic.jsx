@@ -1488,7 +1488,7 @@ export default function Agentic() {
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-base font-bold text-white">{row.ticker}</span>
                             <span className={`text-[10px] font-medium px-2 py-0.5 rounded border ${decisionColor}`}>
-                              {decision.replace('_', ' ')}
+                              {(decision || '').replace('_', ' ')}
                             </span>
                             {row.trap_warning && (
                               <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/40 flex items-center gap-1">
@@ -1518,7 +1518,7 @@ export default function Agentic() {
                           {row.rvol_at_detection > 0 && <span>RVOL {row.rvol_at_detection.toFixed(1)}x</span>}
                           {row.float_shares_at_detection && <span>Float {(row.float_shares_at_detection/1e6).toFixed(1)}M</span>}
                           {row.market_cap_at_detection && <span>Cap ${(row.market_cap_at_detection/1e6).toFixed(0)}M</span>}
-                          <span className="text-orange-400">→ {row.oracle_action.replace('_', ' ')}</span>
+                          <span className="text-orange-400">→ {(row.oracle_action || '').replace('_', ' ')}</span>
                         </div>
                       </div>
                     )
@@ -2209,7 +2209,7 @@ export default function Agentic() {
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-400 border border-green-500/20">
                               Trending on StockTwits #{a.stocktwits_rank}
                             </span>
-                            {a.stocktwits_sentiment_bullish_pct !== null && (
+                            {a.stocktwits_sentiment_bullish_pct != null && (
                               <span className={`text-[10px] ${a.stocktwits_sentiment_bullish_pct >= 70 ? 'text-green-400' : a.stocktwits_sentiment_bullish_pct >= 40 ? 'text-yellow-400' : 'text-red-400'}`}>
                                 {a.stocktwits_sentiment_bullish_pct.toFixed(0)}% bullish
                               </span>

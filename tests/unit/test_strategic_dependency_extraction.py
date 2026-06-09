@@ -39,8 +39,10 @@ def test_frontend_api_split_has_strategic_legacy_boundaries():
     compat = Path("frontend/src/api.js")
 
     assert strategic.exists()
-    assert legacy.exists()
-    assert compat.exists()
+    # The legacy API module and the unused compat barrel were removed as dead
+    # code (no importers). Strategic is the live surface.
+    assert not legacy.exists()
+    assert not compat.exists()
 
     strategic_text = strategic.read_text(encoding="utf-8")
     legacy_only_helpers = [
@@ -52,10 +54,6 @@ def test_frontend_api_split_has_strategic_legacy_boundaries():
     ]
     for helper in legacy_only_helpers:
         assert f"export const {helper}" not in strategic_text
-
-    compat_text = compat.read_text(encoding="utf-8")
-    assert "api_strategic" in compat_text
-    assert "api_legacy" not in compat_text
 
 
 def test_ohlcvbar_is_reexported_from_strategic_market_data_model():

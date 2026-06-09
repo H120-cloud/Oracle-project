@@ -20,7 +20,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timezone, timedelta
-from typing import Optional
+from typing import Any, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -242,6 +242,20 @@ PRE_NEWS_SCAN_INTERVAL = 180  # 3 minutes for timely pre-news alerts
 PRE_NEWS_STARTUP_DELAY = 20
 
 
+def _fetch_anomaly_prices(ticker):
+    """Fetch (peak_high, last_close) for a ticker from intraday bars.
+
+    Blocking yfinance call — invoke via ``asyncio.to_thread`` from async code.
+    Returns ``(None, None)`` when no intraday data is available.
+    """
+    import yfinance as yf
+    tkr_obj = yf.Ticker(ticker)
+    hist = tkr_obj.history(period="1d", interval="5m")
+    if not hist.empty:
+        return float(hist["High"].max()), float(hist["Close"].iloc[-1])
+    return None, None
+
+
 async def _pre_news_scan_loop():
     """Background task: scan for pre-news volume anomalies, send Telegram alerts, auto-add to Agentic."""
     # Quick startup refresh: update news status on any persisted anomalies so
@@ -449,13 +463,6 @@ async def _pre_news_scan_loop():
                 if anomaly.state not in ("expired", "catalyst_confirmed"):
                     continue
                 try:
-                    def _fetch_anomaly_prices(tkr_str):
-                        tkr_obj = yf.Ticker(tkr_str)
-                        hist = tkr_obj.history(period="1d", interval="5m")
-                        if not hist.empty:
-                            return float(hist["High"].max()), float(hist["Close"].iloc[-1])
-                        return None, None
-
                     peak, exit_price = await asyncio.to_thread(_fetch_anomaly_prices, anomaly.ticker)
                     learning.record_outcome(anomaly, peak_price=peak, exit_price=exit_price)
                     anomaly.outcome_recorded = True
@@ -1091,6 +1098,7 @@ async def _news_momentum_scan_loop():
     _prnewswire_scraper: Optional[Any] = None
     _sharecast_scraper: Optional[Any] = None
     _wire_scraper: Optional[Any] = None
+    _investing_scraper: Optional[Any] = None
     _finviz_news_scraper: Optional[Any] = None
     # Heartbeat: log every N iterations so we can confirm the loop is alive
     # even when no new events are detected. Without this, an audit of the
@@ -1128,6 +1136,9 @@ async def _news_momentum_scan_loop():
                 if _wire_scraper is None:
                     from src.core.wire_news import WireNewsScraper
                     _wire_scraper = WireNewsScraper()
+                if _investing_scraper is None:
+                    from src.core.investing_news import InvestingNewsScraper
+                    _investing_scraper = InvestingNewsScraper()
 
                 all_items: List[Any] = []
                 source_timeout = float(os.getenv("NEWS_SOURCE_FETCH_TIMEOUT_SECONDS", "12") or 12)
@@ -1153,6 +1164,7 @@ async def _news_momentum_scan_loop():
                     _fetch_source("PRNewswire", _prnewswire_scraper.fetch_all),
                     _fetch_source("Sharecast", _sharecast_scraper.fetch_all),
                     _fetch_source("WireNews", _wire_scraper.fetch_all),
+                    _fetch_source("Investing", _investing_scraper.fetch_all),
                 )
 
                 for source_name, summary, items, exc in source_results:
@@ -1232,6 +1244,8 @@ async def _news_momentum_scan_loop():
                         source_enum = NewsSource.PR_NEWSWIRE
                     elif source_name == "Sharecast":
                         source_enum = NewsSource.SHARECAST
+                    elif source_name == "Investing":
+                        source_enum = NewsSource.INVESTING
                     elif source_name == "GlobeNewswire":
                         source_enum = NewsSource.GLOBE_NEWSWIRE
                     elif source_name == "BusinessWire":

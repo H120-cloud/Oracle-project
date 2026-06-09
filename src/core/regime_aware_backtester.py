@@ -34,7 +34,7 @@ from src.models.schemas import (
 )
 from src.core.decision_engine import DecisionEngine
 from src.core.market_trend_regime_detector import MarketTrendRegimeDetector, RegimeFilterResult
-from src.services.market_data import get_market_data_provider
+from src.services.market_data import get_market_data_provider, IMarketDataProvider
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +271,7 @@ class RegimeAwareBacktester:
             
             # Not in position - look for entry signal
             # Generate signal using DecisionEngine with full bars
-            signal = self._generate_signal(config.ticker, window, current_bar)
+            signal = self._generate_signal(config.ticker, window, current_bar, config.interval)
             result.total_signals_generated += 1
             
             # Track regime stats regardless of whether trade was taken
@@ -316,7 +316,8 @@ class RegimeAwareBacktester:
         self,
         ticker: str,
         bars: List[OHLCVBar],
-        current_bar: OHLCVBar
+        current_bar: OHLCVBar,
+        interval: str,
     ) -> TradingSignal:
         """
         Generate trading signal using DecisionEngine with full bar history.
@@ -349,7 +350,7 @@ class RegimeAwareBacktester:
         
         # Use DecisionEngine with full bars for regime detection
         # V8: Also pass daily_bars for HTF analysis (use same bars if interval is daily)
-        daily_bars = bars if config.interval == "1d" else []
+        daily_bars = bars if interval == "1d" else []
         signal = self.decision_engine.decide(
             stock=stock,
             classification=classification,

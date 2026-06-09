@@ -5,6 +5,8 @@ All endpoints under /agentic/pre-news.
 Follows existing FastAPI style in the project.
 """
 
+import asyncio
+import json
 import logging
 from pathlib import Path
 from src.utils.data_paths import agentic_data_dir, agentic_path
@@ -194,16 +196,6 @@ async def missed_review():
     }
 
 
-@router.get("/{ticker}")
-async def get_anomaly_detail(ticker: str):
-    """Get detailed anomaly data for a specific ticker."""
-    detector = _get_detector()
-    anomaly = detector.anomalies.get(ticker.upper())
-    if not anomaly:
-        raise HTTPException(status_code=404, detail=f"No anomaly found for {ticker}")
-    return anomaly.model_dump(mode="json")
-
-
 # ── Validation Endpoints ───────────────────────────────────────────────────────
 
 
@@ -288,10 +280,13 @@ async def get_success_rate_report():
     report_path = agentic_path("evaluation_reports", "pre_news_success_rate_report.json")
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="No success-rate report found. Run /evaluation/analyze first.")
-    try:
+    def _read_json():
         with open(report_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data
+            return json.load(f)
+
+    try:
+        # Offload the blocking read so it never stalls the event loop.
+        return await asyncio.to_thread(_read_json)
     except (json.JSONDecodeError, OSError) as exc:
         # Treat malformed / unreadable report as "not available" rather than 500
         logger.warning("Pre-news success-rate report unreadable: %s", exc)
@@ -305,8 +300,8 @@ async def get_success_rate_report_md():
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="No success-rate report found. Run /evaluation/analyze first.")
     try:
-        with open(report_path, "r", encoding="utf-8") as f:
-            text = f.read()
+        # Offload the blocking read so it never stalls the event loop.
+        text = await asyncio.to_thread(report_path.read_text, encoding="utf-8")
         return {"markdown": text}
     except OSError as exc:
         logger.warning("Pre-news report markdown unreadable: %s", exc)
@@ -364,3 +359,18 @@ async def export_baselines(session_date: str):
     except Exception as exc:
         logger.error("Baseline export failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Baseline export failed: {exc}")
+
+
+# ── Dynamic catch-all (MUST stay last) ──────────────────────────────────────────
+# FastAPI matches routes in registration order. "/{ticker}" matches any single
+# path segment, so it must be declared AFTER every literal single-segment route
+# (e.g. "/baselines") — otherwise it shadows them and they return 404. Keep this
+# at the bottom of the file.
+@router.get("/{ticker}")
+async def get_anomaly_detail(ticker: str):
+    """Get detailed anomaly data for a specific ticker."""
+    detector = _get_detector()
+    anomaly = detector.anomalies.get(ticker.upper())
+    if not anomaly:
+        raise HTTPException(status_code=404, detail=f"No anomaly found for {ticker}")
+    return anomaly.model_dump(mode="json")

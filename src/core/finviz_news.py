@@ -242,6 +242,47 @@ class FinvizNewsScraper:
                 if len(cols) >= 3:
                     # v=6 layout: col0=date, col1=time, col2=headline
                     headline_col = cols[2]
+                    # Timestamp (shared by both layouts): v=6 shows a relative
+                    # time like "44 min" in the date cell. Forward-fill bare cells.
+                    date_text = cols[0].get_text(strip=True)
+                    time_text = cols[1].get_text(strip=True)
+                    combined = f"{date_text} {time_text}".strip()
+                    parsed = self._parse_time(combined) or self._parse_time(time_text)
+                    if parsed is not None:
+                        last_ts = parsed
+                        ts = parsed
+                    else:
+                        ts = last_ts
+
+                    # New "market-pulse" layout (Finviz 2026+): the real headline
+                    # is in a dedicated span; the anchors are ticker/performance
+                    # badges (e.g. "ABTS+39.20%"), not the title.
+                    pulse = headline_col.find("span", class_="market-pulse-headline")
+                    if pulse is not None:
+                        headline = (pulse.get("title") or pulse.get_text(strip=True) or "").strip()
+                        if not headline or len(headline) < 10:
+                            continue
+                        # Ticker from badge hrefs (?t=TICKER) — most reliable.
+                        badges = headline_col.find("div", class_="market-pulse-badges") or headline_col
+                        tickers: List[str] = []
+                        for a in badges.find_all("a", href=True):
+                            m = re.search(r"[?&]t=([A-Za-z.\-]{1,6})", a.get("href", ""))
+                            if m:
+                                tk = m.group(1).upper()
+                                if tk and tk not in tickers:
+                                    tickers.append(tk)
+                        if not tickers:
+                            tickers = self._extract_tickers(headline)
+                        first_link = headline_col.find("a", href=True)
+                        href0 = first_link.get("href", "") if first_link else ""
+                        url = urljoin("https://finviz.com", href0) if href0.startswith("/") else (href0 or self.BLOG_URL)
+                        items.append(FinvizNewsItem(
+                            headline=headline, source="Finviz", url=url, timestamp=ts,
+                            tickers=tickers, category="blog", sentiment=self._sentiment(headline),
+                        ))
+                        continue
+
+                    # ── Legacy layout fallback (headline inside an <a>) ──
                     link = headline_col.find("a")
                     if link:
                         headline = link.get_text(strip=True)
@@ -253,17 +294,6 @@ class FinvizNewsScraper:
                         spans = headline_col.find_all("span")
                         if spans:
                             source = spans[-1].get_text(strip=True) or "Blog"
-                        date_text = cols[0].get_text(strip=True)
-                        time_text = cols[1].get_text(strip=True)
-                        # Try date+time first (covers older items with full date),
-                        # then time-only, then forward-fill from the last known ts.
-                        combined = f"{date_text} {time_text}".strip()
-                        parsed = self._parse_time(combined) or self._parse_time(time_text)
-                        if parsed is not None:
-                            last_ts = parsed
-                            ts = parsed
-                        else:
-                            ts = last_ts
                         # The blog/v=6 layout puts ticker spans inside the same
                         # headline column as v=3. Pull any tag spans here and
                         # filter via the same primary-subject heuristic — without
@@ -430,6 +460,14 @@ class FinvizNewsScraper:
         ]
         if confirmed:
             return confirmed
+        # None of Finviz's tags appear in the headline. If the headline itself
+        # names a ticker as its subject ("SIRI Stock Surges ...", "SIRI shares
+        # ..."), prefer that over Finviz's (sometimes wrong) first tag. The
+        # symbol must be genuinely uppercase so company names ("Tesla unveils
+        # ...") don't trigger it.
+        m = re.match(r"\s*([A-Z]{1,5})\s+(?:[Ss]tock|[Ss]hares)\b", headline)
+        if m:
+            return [m.group(1).upper()]
         return [ticker_tags[0]]
 
     def close(self):

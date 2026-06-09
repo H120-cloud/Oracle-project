@@ -236,9 +236,13 @@ def read_news_latency(
         alerts_by_source[src] += 1
         if r["is_blocked"] and r["blocked_category"]:
             blocked_reason_distribution[r["blocked_category"]] += 1
-        tot = r["derived"]["total_latency_seconds"]
-        if tot is not None:
-            latency_acc[src].append(tot)
+        # Average latency is only meaningful over DELIVERED alerts (published ->
+        # telegram_sent). For blocked rows total_latency is just the headline's
+        # age at the gate, which would swamp the average with non-latency noise.
+        if r.get("alert_sent"):
+            tot = r["derived"]["total_latency_seconds"]
+            if tot is not None:
+                latency_acc[src].append(tot)
     avg_latency_by_source = {
         src: round(sum(v) / len(v), 3) for src, v in latency_acc.items() if v
     }
@@ -253,7 +257,12 @@ def read_news_latency(
 
 
 def read_blocked_alerts(**kwargs) -> dict:
-    kwargs.setdefault("status", "blocked")
+    # The route always forwards status=None when no sub-category is selected, so
+    # dict.setdefault would never fire (the key is present, just None) and the
+    # "blocked only" view would leak alerted/delayed rows. Force the blocked view
+    # unless an explicit (blocked) sub-category filter is chosen.
+    if not kwargs.get("status"):
+        kwargs["status"] = "blocked"
     return read_news_latency(**kwargs)
 
 
@@ -558,10 +567,15 @@ def report_files() -> dict[str, tuple[Path, str]]:
         "rocket_model_shadow_report.md": (docs / "rocket_model_shadow_report.md", "markdown"),
         "telegram_outbox_reliability.md": (docs / "telegram_outbox_reliability.md", "markdown"),
         "admin_diagnostics_dashboard_report.md": (docs / "admin_diagnostics_dashboard_report.md", "markdown"),
+        "news_momentum_eod_reports.json": (agentic_path("news_momentum_eod_reports.json"), "json"),
     }
 
 
-_REPORT_MEDIA = {"markdown": "text/markdown", "jsonl": "application/x-ndjson"}
+_REPORT_MEDIA = {
+    "markdown": "text/markdown",
+    "jsonl": "application/x-ndjson",
+    "json": "application/json",
+}
 
 
 def list_reports() -> dict:

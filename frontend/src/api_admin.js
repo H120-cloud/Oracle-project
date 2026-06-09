@@ -18,6 +18,10 @@ export const getBlockedAlerts = (p) => fetchJSON(`${BASE}/admin/blocked-alerts${
 export const getFastWatchAlerts = (p) => fetchJSON(`${BASE}/admin/fast-watch-alerts${qs(p)}`);
 export const getReports = () => fetchJSON(`${BASE}/admin/reports`);
 
+// Live scraper speed probe — runs the real fetches, can take up to ~timeout s.
+export const getScraperSpeedTest = (timeout = 15) =>
+  fetchJSON(`${BASE}/admin/scraper-speed-test?timeout=${timeout}`, { timeoutMs: (timeout + 10) * 1000 });
+
 // URL builders for downloads.
 export const dataDownloadUrl = (kind, fmt, params) =>
   `${BASE}/admin/download/${kind}${qs({ ...(params || {}), format: fmt })}`;

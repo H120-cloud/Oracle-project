@@ -280,3 +280,43 @@ def test_cooldown_exceeds_freshness_window(orch):
         f"cooldown ({cooldown_h}h) must exceed freshness window "
         f"({orch.config.news_max_age_hours}h) or the same catalyst re-alerts"
     )
+
+
+def test_blocked_candidate_latency_traced_once_per_reason(orch, monkeypatch):
+    """A blocked-but-active candidate is re-gated on every refresh (~45s, up to
+    24h). The latency trace must record it once per block reason, not once per
+    pass — otherwise the trace floods with duplicate rows whose published->gate
+    'latency' just tracks the headline ageing and reads as ever-growing alert
+    latency in the diagnostics view."""
+    import src.core.agentic.news_momentum_orchestrator as orch_mod
+
+    traced: list = []
+    monkeypatch.setattr(
+        orch_mod, "trace_candidate",
+        lambda *a, **k: traced.append(k.get("blocked_reason")),
+    )
+
+    # Negative news is an unconditional block with a stable reason.
+    c = _make_candidate(
+        ticker="NEGN",
+        headline="Company prices dilutive offering amid shareholder lawsuit",
+        is_negative=True,
+    )
+
+    for _ in range(4):  # simulate four refresh re-gates
+        assert orch._should_send_telegram(c, adaptive={}) is False
+    assert len(traced) == 1, f"blocked candidate traced {len(traced)}x; expected 1"
+
+
+def test_bad_ticker_candidate_is_deactivated_to_stop_refresh(orch, monkeypatch):
+    """bad_ticker is a terminal block (persistent bad-list), so the candidate
+    must be deactivated — the ~45s refresh loop skips inactive candidates, so it
+    stops being re-enriched/re-evaluated for the next 24h."""
+    monkeypatch.setattr(orch, "_is_bad_ticker", lambda ticker: True)
+    c = _make_candidate(ticker="DEADCO")
+    assert c.is_active is True
+
+    allowed = orch._should_send_telegram(c, adaptive={})
+    assert allowed is False
+    assert _block_reason(c) == "bad_ticker"
+    assert c.is_active is False

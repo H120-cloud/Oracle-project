@@ -5,6 +5,12 @@ from pathlib import Path
 from src.config import Settings
 
 
+def test_alpaca_news_stream_disabled_as_source_by_default():
+    # Alpaca was removed as a momentum news source (low-signal headlines). The
+    # flag must default off so RSS polling is the source unless explicitly re-enabled.
+    assert Settings(_env_file=None).alpaca_news_stream_enabled is False
+
+
 def test_default_mode_preserves_legacy_systems_and_strategic_systems():
     settings = Settings(oracle_lean_mode=False, _env_file=None)
     status = settings.lean_mode_status()

@@ -120,6 +120,17 @@ def fast_watch_alerts(
     )
 
 
+@router.get("/scraper-speed-test", summary="Live per-source news scraper speed probe")
+async def scraper_speed_test(
+    timeout: float = Query(15.0, ge=1.0, le=60.0, description="Per-source fetch timeout (seconds)"),
+):
+    """Fetch from every news source concurrently and time each one, so the
+    slowest source (the bottleneck) is obvious. Read-only: hits external feeds,
+    writes nothing. Runs live — expect it to take up to ``timeout`` seconds."""
+    from src.services.scraper_speed_probe import probe_scraper_speeds
+    return await probe_scraper_speeds(timeout=timeout)
+
+
 # ── Downloads (read-only) ───────────────────────────────────────────────────
 
 _Format = Query("csv", description="Export format: csv | jsonl | json")

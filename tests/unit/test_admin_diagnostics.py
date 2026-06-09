@@ -260,6 +260,43 @@ def test_blocked_and_fast_watch_views(tmp_path):
     assert {i["ticker"] for i in ad.read_fast_watch_alerts(path=p)["items"]} == {"FAST"}
 
 
+def test_blocked_alerts_stays_blocked_only_when_status_none(tmp_path):
+    # Regression: the HTTP route always forwards status=None, which previously
+    # defeated the blocked-only default (setdefault no-ops on a present key) and
+    # leaked alerted/delayed rows into the Blocked Alerts tab.
+    rows = [
+        _lat_row("OK", sent=True),
+        _lat_row("BLK", sent=False, blocked="duplicate"),
+    ]
+    p = _write_jsonl(tmp_path / "lat.jsonl", rows)
+    out = ad.read_blocked_alerts(path=p, status=None)
+    assert {i["ticker"] for i in out["items"]} == {"BLK"}
+    assert all(i["status"] == "blocked" for i in out["items"])
+
+
+def test_avg_latency_counts_delivered_alerts_only(tmp_path):
+    # The average must reflect published->sent over delivered alerts. A blocked
+    # row's total_latency is just the headline age at the gate and must not be
+    # averaged in (it previously swamped the metric with ~hours-large values).
+    rows = [
+        _lat_row("AL", source="Finviz", sent=True, total=5.0),
+        _lat_row("BK", source="Finviz", sent=False, blocked="duplicate", total=9000.0),
+    ]
+    p = _write_jsonl(tmp_path / "lat.jsonl", rows)
+    out = ad.read_news_latency(path=p)
+    assert out["charts"]["avg_latency_by_source"].get("Finviz") == 5.0
+
+
+def test_eod_report_card_is_in_download_allowlist():
+    # The news-momentum EOD self-review report must be downloadable from the
+    # Admin Diagnostics "Reports" tab.
+    files = ad.report_files()
+    assert "news_momentum_eod_reports.json" in files
+    _path, rtype = files["news_momentum_eod_reports.json"]
+    assert rtype == "json"
+    assert ad._REPORT_MEDIA["json"] == "application/json"
+
+
 def test_source_health_aggregates(tmp_path):
     rows = [
         _lat_row("A", source="Finviz", sent=True, total=5.0),

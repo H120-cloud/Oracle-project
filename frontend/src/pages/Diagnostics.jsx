@@ -6,7 +6,7 @@ import { ArrowUpDown, Download, FileDown } from 'lucide-react'
 import {
   getNewsLatency, getRocketShadow, getTelegramOutbox,
   getSourceHealth, getBlockedAlerts, getFastWatchAlerts,
-  getReports, downloadAdminFile, dataDownloadUrl, reportDownloadUrl,
+  getReports, getScraperSpeedTest, downloadAdminFile, dataDownloadUrl, reportDownloadUrl,
 } from '../api_admin'
 
 const TABS = [
@@ -17,6 +17,7 @@ const TABS = [
   { id: 'source-health', label: 'Source Health' },
   { id: 'blocked-alerts', label: 'Blocked Alerts' },
   { id: 'fast-watch', label: 'FAST WATCH' },
+  { id: 'scraper-speed', label: 'Scraper Speed' },
 ]
 
 const fmtBytes = (n) => {
@@ -508,6 +509,62 @@ function ReportsTab() {
   )
 }
 
+const SCRAPER_SPEED_COLUMNS = [
+  { key: 'source', label: 'Source', render: (r) => <span className="font-semibold">{r.source}</span> },
+  { key: 'duration_seconds', label: 'Duration', sortAccessor: (r) => r.duration_seconds, render: (r) => fmtLat(r.duration_seconds) },
+  { key: 'total_items', label: 'Items' },
+  { key: 'news_items', label: 'News' },
+  { key: 'blog_items', label: 'Blogs' },
+  { key: 'ok', label: 'Status', render: (r) => <Badge status={r.ok ? 'sent' : 'dead_letter'} /> },
+  { key: 'error', label: 'Error', sortable: false, render: (r) => r.error || '—' },
+]
+
+function ScraperSpeedTab() {
+  const [state, setState] = useState({ loading: false, error: null, data: null })
+  const runTest = async () => {
+    setState({ loading: true, error: null, data: null })
+    try {
+      setState({ loading: false, error: null, data: await getScraperSpeedTest(15) })
+    } catch (e) {
+      setState({ loading: false, error: e.message, data: null })
+    }
+  }
+  const { loading, error, data } = state
+  const items = data?.items || []
+  return (
+    <div>
+      <Card title="News Scraper Speed Test">
+        <p className="text-sm text-gray-400 mb-3">
+          Fetches from every news source at once (force-refresh, no cache) and times each one,
+          so the slowest source — the bottleneck — is obvious. Runs live against the real feeds;
+          give it up to ~15 seconds.
+        </p>
+        <button onClick={runTest} disabled={loading} className="btn-primary disabled:opacity-50">
+          {loading ? 'Probing all sources…' : 'Run Speed Test'}
+        </button>
+      </Card>
+
+      {error && <div className="text-red-400 mt-3">Error: {error}</div>}
+      {loading && <div className="text-gray-400 py-8 text-center">Probing all sources… (up to ~15s)</div>}
+
+      {data && !loading && (
+        <div className="mt-4 space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard label="Sources OK" value={`${data.sources_ok}/${data.sources_tested}`}
+              tone={data.sources_ok === data.sources_tested ? 'green' : 'yellow'} />
+            <StatCard label="Slowest Source" value={data.slowest_source || '—'} tone="yellow" />
+            <StatCard label="Slowest Time" value={data.slowest_seconds != null ? `${data.slowest_seconds}s` : '—'} tone="yellow" />
+            <StatCard label="Total Items" value={data.total_items ?? 0} tone="blue" />
+          </div>
+          <BarPanel title="Fetch Duration by Source (s)" color="#eab308" valueFmt={(v) => `${v}s`}
+            data={Object.fromEntries(items.map((r) => [r.source, r.duration_seconds]))} />
+          <DataTable columns={SCRAPER_SPEED_COLUMNS} rows={items} csvName="scraper_speed.csv" />
+        </div>
+      )}
+    </div>
+  )
+}
+
 const TAB_COMPONENTS = {
   'news-latency': NewsLatencyTab,
   'rocket-shadow': RocketShadowTab,
@@ -516,6 +573,7 @@ const TAB_COMPONENTS = {
   'source-health': SourceHealthTab,
   'blocked-alerts': BlockedAlertsTab,
   'fast-watch': FastWatchTab,
+  'scraper-speed': ScraperSpeedTab,
 }
 
 export default function Diagnostics() {

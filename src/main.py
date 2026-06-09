@@ -115,18 +115,22 @@ async def _init_news_momentum_async():
     except Exception as exc:
         logger.warning("SEC Intelligence wiring failed: %s", exc)
 
-    # Alpaca real-time news stream (depends on orchestrator)
-    try:
-        if _news_momentum_orch is not None:
-            from src.services.alpaca_news_stream import AlpacaNewsStream
-            _alpaca_news_stream = AlpacaNewsStream(on_news=_handle_streamed_news)
-            if _alpaca_news_stream.start(main_loop=asyncio.get_running_loop()):
-                logger.info("Alpaca real-time news stream started (event-driven alerts)")
-            else:
-                _alpaca_news_stream = None
-                logger.info("Alpaca news stream not started (no creds/SDK) — RSS polling only")
-    except Exception as exc:
-        logger.warning("Alpaca news stream init failed: %s", exc)
+    # Alpaca real-time news stream (depends on orchestrator). Disabled by default
+    # as a momentum source — see Settings.alpaca_news_stream_enabled.
+    if not get_settings().alpaca_news_stream_enabled:
+        logger.info("Alpaca news stream disabled as a source (alpaca_news_stream_enabled=false) — RSS polling only")
+    else:
+        try:
+            if _news_momentum_orch is not None:
+                from src.services.alpaca_news_stream import AlpacaNewsStream
+                _alpaca_news_stream = AlpacaNewsStream(on_news=_handle_streamed_news)
+                if _alpaca_news_stream.start(main_loop=asyncio.get_running_loop()):
+                    logger.info("Alpaca real-time news stream started (event-driven alerts)")
+                else:
+                    _alpaca_news_stream = None
+                    logger.info("Alpaca news stream not started (no creds/SDK) — RSS polling only")
+        except Exception as exc:
+            logger.warning("Alpaca news stream init failed: %s", exc)
 
     _startup_ready = True
     logger.info("Oracle startup ready — all heavy init completed")
@@ -1479,6 +1483,20 @@ async def _news_momentum_eod_review_loop():
             reviewer = _news_momentum_orch.get_eod_reviewer()
             result = await reviewer.run_review()
             logger.info("EOD review result: %s", result.get("summary", result))
+
+            # Daily maintenance: compact the latency trace so duplicate blocked
+            # rows and aged-out events don't bloat the file (which the diagnostics
+            # endpoint re-parses in full on every request).
+            try:
+                from src.core.agentic.news_alert_latency_trace import compact_latency_trace
+                stats = await asyncio.to_thread(compact_latency_trace)
+                if stats.get("removed"):
+                    logger.info(
+                        "Latency trace compacted: %d -> %d rows (removed %d)",
+                        stats["before"], stats["after"], stats["removed"],
+                    )
+            except Exception as exc:
+                logger.warning("Latency trace compaction failed: %s", exc)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

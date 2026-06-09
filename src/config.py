@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     alpaca_api_key: str = ""
     alpaca_secret_key: str = ""
     alpaca_data_feed: str = "iex"
+    # Real-time Alpaca news stream as a momentum source — disabled. Its headlines
+    # were overwhelmingly low-signal (almost all blocked on impact_floor /
+    # bad_ticker / no_price). RSS polling (Finviz / StockTitan / PRNewswire /
+    # etc.) remains the news source. This flag does NOT affect Alpaca market-data
+    # or paper trading. Set ALPACA_NEWS_STREAM_ENABLED=true to re-enable.
+    alpaca_news_stream_enabled: bool = False
 
     # V10: Paper Trading
     paper_trading_enabled: bool = True

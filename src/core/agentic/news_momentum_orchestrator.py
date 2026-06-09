@@ -1862,21 +1862,30 @@ class NewsMomentumOrchestrator:
         # a delivered Telegram alert; sent alerts are recorded by the learning
         # tracker, and send failures are logged in _send_telegram_alert.
         if not allowed and not c.telegram_sent:
+            reason = getattr(c, "_block_reason", None)
             try:
-                reason = getattr(c, "_block_reason", None)
                 self._shadow_logger.log_candidate(c, was_blocked=(not allowed), block_reason=reason)
             except Exception as exc:
                 logger.debug("Shadow log failed for %s: %s", c.ticker, exc)
-            try:
-                trace_candidate(
-                    c,
-                    alert_sent=False,
-                    blocked_reason=getattr(c, "_block_reason", None),
-                    alert_type="news_momentum_gate",
-                    fast_path=False,
-                )
-            except Exception as exc:
-                logger.debug("Latency trace failed for blocked %s: %s", c.ticker, exc)
+            # Trace a blocked candidate only the first time it is blocked for a
+            # given reason. A blocked-but-active candidate is re-gated on every
+            # refresh (~45s, up to 24h), so tracing each pass floods the latency
+            # log with duplicate rows whose published->gate "latency" merely
+            # tracks the headline ageing — which reads as ever-growing alert
+            # latency in the diagnostics view. The eventual pass/send is recorded
+            # separately by the learning tracker, so this loses no signal.
+            if reason != getattr(c, "_last_traced_block_reason", None):
+                c._last_traced_block_reason = reason  # type: ignore[attr-defined]
+                try:
+                    trace_candidate(
+                        c,
+                        alert_sent=False,
+                        blocked_reason=reason,
+                        alert_type="news_momentum_gate",
+                        fast_path=False,
+                    )
+                except Exception as exc:
+                    logger.debug("Latency trace failed for blocked %s: %s", c.ticker, exc)
         return allowed
 
     def _should_send_telegram_impl(self, c: NewsMomentumCandidate, adaptive: dict) -> bool:
@@ -1889,10 +1898,15 @@ class NewsMomentumOrchestrator:
             c._block_reason = "already_alerted"  # type: ignore[attr-defined]
             return False
 
-        # Skip tickers known to be delisted / unfetchable
+        # Skip tickers known to be delisted / unfetchable. This block is terminal
+        # — a ticker on the persistent bad-list won't become valid on a refresh —
+        # so deactivate it to drop it from the ~45s refresh/re-gate loop. Left
+        # active, it would be re-enriched and re-evaluated for up to 24h, wasting
+        # market-data calls with no possible upside.
         if self._is_bad_ticker(c.ticker):
             logger.debug("Telegram gate: %s is bad ticker", c.ticker)
             c._block_reason = "bad_ticker"  # type: ignore[attr-defined]
+            c.is_active = False
             return False
 
         # Reject if we have no live price data (e.g. delisted ticker or rate-limit failure).

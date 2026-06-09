@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -135,3 +135,79 @@ def trace_candidate(candidate: Any, *, alert_sent: bool, blocked_reason: Optiona
             **extra,
         )
     )
+
+
+def _latency_or_inf(row: Mapping[str, Any]) -> float:
+    value = row.get("total_latency_seconds")
+    return float(value) if isinstance(value, (int, float)) else float("inf")
+
+
+def compact_latency_trace(
+    path: Path = TRACE_FILE,
+    *,
+    retention_days: int = 30,
+    now: Optional[datetime] = None,
+) -> dict[str, int]:
+    """Compact the append-only trace file in place.
+
+    A blocked-but-active candidate is re-gated every ~45s, so the raw file
+    accumulates many duplicate blocked rows whose ``total_latency_seconds`` just
+    tracks the headline ageing. This collapses blocked rows to one per
+    ``(ticker, published_at, blocked_reason)`` — keeping the EARLIEST (smallest
+    latency = the real first-block) — and drops any event older than
+    ``retention_days``. Delivered-alert rows (``alert_sent``) are always kept.
+
+    Returns ``{"before", "after", "removed"}``. The rewrite is atomic (temp file
+    + ``os.replace``) and holds the same lock as the appender.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {"before": 0, "after": 0, "removed": 0}
+
+    cutoff = None
+    if retention_days and retention_days > 0:
+        cutoff = (now or utc_now()) - timedelta(days=retention_days)
+
+    with _LOCK:
+        rows: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                rows.append(obj)
+        before = len(rows)
+
+        kept_alerted: list[dict[str, Any]] = []
+        best_blocked: dict[tuple, dict[str, Any]] = {}
+        for r in rows:
+            event_dt = (
+                aware_utc(r.get("published_at"))
+                or aware_utc(r.get("gate_decision_at"))
+                or aware_utc(r.get("telegram_sent_at"))
+            )
+            if cutoff is not None and event_dt is not None and event_dt < cutoff:
+                continue  # outside retention window
+            if r.get("alert_sent"):
+                kept_alerted.append(r)
+                continue
+            key = (r.get("ticker"), r.get("published_at"), r.get("blocked_reason"))
+            existing = best_blocked.get(key)
+            if existing is None or _latency_or_inf(r) < _latency_or_inf(existing):
+                best_blocked[key] = r
+
+        kept = kept_alerted + list(best_blocked.values())
+        kept.sort(key=lambda r: (str(r.get("published_at") or ""), str(r.get("ticker") or "")))
+
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as handle:
+            for r in kept:
+                handle.write(json.dumps(r, ensure_ascii=False, sort_keys=True, default=str) + "\n")
+        os.replace(tmp, path)
+
+    after = len(kept)
+    return {"before": before, "after": after, "removed": before - after}

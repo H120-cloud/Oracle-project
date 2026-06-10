@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # Polygon.io (historical news backfill)
     polygon_api_key: str = ""
 
+    # Finnhub (live quotes; also used as a quote fallback when set)
+    finnhub_api_key: str = ""
+
     # V10: Alpaca API
     alpaca_api_key: str = ""
     alpaca_secret_key: str = ""

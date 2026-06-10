@@ -147,7 +147,10 @@ def build_shadow_feature_row(candidate: Any, *, source_pipeline: str) -> dict[st
             "ticker": getattr(candidate, "ticker", None),
             "alert_time": _iso(detected_at),
             "price_at_alert": _num(getattr(candidate, "current_price", None)),
-            "catalyst_type": _enum_value(getattr(candidate, "catalyst_category", None)),
+            # Training rows store the SUBTYPE here (TelegramAlertRecord is built
+            # with catalyst_type=c.catalyst_sub_type) — mirror that exactly, or
+            # the model sees unseen category values in its key categorical.
+            "catalyst_type": _enum_value(getattr(candidate, "catalyst_sub_type", None)),
             "catalyst_subtype": _enum_value(getattr(candidate, "catalyst_sub_type", None)),
             "catalyst_category": _enum_value(getattr(candidate, "catalyst_category", None)),
             "session_type": _enum_value(getattr(candidate, "session", None)),
@@ -230,11 +233,19 @@ class RocketModelShadowScorer:
         predictions_path: Path | str = DEFAULT_PREDICTIONS_PATH,
         artifact: Optional[Mapping[str, Any]] = None,
         enabled: Optional[bool] = None,
+        max_predictions_bytes: Optional[int] = None,
     ) -> None:
         env_enabled = os.getenv("ROCKET_MODEL_SHADOW_ENABLED", "1").strip().lower()
         self.enabled = enabled if enabled is not None else env_enabled not in {"0", "false", "no", "off"}
         self.model_path = Path(model_path)
         self.predictions_path = Path(predictions_path)
+        # Retention cap for the append-only predictions log (compacted to the
+        # newest half once exceeded) so it can't grow without bound.
+        if max_predictions_bytes is None:
+            max_predictions_bytes = int(
+                os.getenv("ROCKET_SHADOW_MAX_PREDICTIONS_BYTES", str(16 * 1024 * 1024)) or 16 * 1024 * 1024
+            )
+        self.max_predictions_bytes = max_predictions_bytes
         self._artifact: Optional[Mapping[str, Any]] = artifact
         self._load_attempted = artifact is not None
         self._last_load_error: Optional[str] = None
@@ -371,6 +382,29 @@ class RocketModelShadowScorer:
         self.predictions_path.parent.mkdir(parents=True, exist_ok=True)
         with self.predictions_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        self._compact_if_oversized()
+
+    def _compact_if_oversized(self) -> None:
+        """Keep the newest half of the log once it exceeds the retention cap."""
+        try:
+            if not self.max_predictions_bytes:
+                return
+            if self.predictions_path.stat().st_size <= self.max_predictions_bytes:
+                return
+            lines = [
+                line for line in self.predictions_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            keep = lines[len(lines) // 2:]
+            tmp = self.predictions_path.with_suffix(".tmp")
+            tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
+            os.replace(tmp, self.predictions_path)
+            logger.info(
+                "Rocket shadow predictions compacted: kept newest %d of %d rows",
+                len(keep), len(lines),
+            )
+        except Exception as exc:
+            logger.debug("Rocket shadow predictions compaction skipped: %s", exc)
 
     def predict_and_log_candidate(self, candidate: Any, *, source_pipeline: str) -> Optional[dict[str, Any]]:
         try:

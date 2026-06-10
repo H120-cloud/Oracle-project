@@ -372,6 +372,7 @@ class NewsMomentumOrchestrator:
             logger.warning("NewsMomentum: Rocket shadow scorer init failed: %s", exc)
             self._rocket_shadow_scorer = None
         self._polygon_provider = None
+        self._finnhub_provider = None
 
     def _get_polygon_provider(self):
         """Lazy Polygon provider for fast quote fallback without losing cache."""
@@ -384,6 +385,26 @@ class NewsMomentumOrchestrator:
         from src.services.polygon_provider import PolygonProvider
         self._polygon_provider = PolygonProvider(api_key=settings.polygon_api_key)
         return self._polygon_provider
+
+    def _get_finnhub_provider(self):
+        """Lazy Finnhub provider for quote fallback.
+
+        yfinance is IP-blocked on cloud hosts and Alpaca's free IEX feed is
+        sparse, so candidates could sit blocked/no_price for many minutes and
+        alert late. Finnhub works from the cloud — when FINNHUB_API_KEY is set
+        (env or settings), use it as a fallback even if MARKET_DATA_PROVIDER
+        points elsewhere.
+        """
+        if self._finnhub_provider is not None:
+            return self._finnhub_provider
+        import os
+        from src.config import get_settings
+        key = os.getenv("FINNHUB_API_KEY", "") or getattr(get_settings(), "finnhub_api_key", "")
+        if not key:
+            return None
+        from src.services.market_data import FinnhubProvider
+        self._finnhub_provider = FinnhubProvider(api_key=key)
+        return self._finnhub_provider
 
     def _calibrate_ml_percentiles(self) -> None:
         """
@@ -536,7 +557,16 @@ class NewsMomentumOrchestrator:
             # as positive training examples so the model learns why they
             # were good even if we didn't alert.
             missed = [r for r in self._missed_learning._records if r.missed]
-            return self._ml_engine.train(records, missed_records=missed)
+            result = self._ml_engine.train(records, missed_records=missed)
+            # A newly promoted model has a different probability distribution;
+            # the winner-layer percentile bands (p85/p95/p99) must be re-derived
+            # from it, or every alert is mis-tiered until the next restart.
+            if getattr(result, "promoted", False):
+                try:
+                    self._calibrate_ml_percentiles()
+                except Exception as exc:
+                    logger.warning("NewsMomentum: post-retrain ML recalibration failed: %s", exc)
+            return result
         except Exception as exc:
             logger.error("NewsMomentum: ML retrain failed: %s", exc, exc_info=True)
             from src.core.agentic.news_momentum_ml_engine import TrainingResult
@@ -1628,6 +1658,19 @@ class NewsMomentumOrchestrator:
                 if isinstance(exc, asyncio.TimeoutError):
                     c.price_status = "pending"
                 logger.debug("NewsMomentum: Polygon fallback failed for %s: %s", c.ticker, exc)
+
+        # Finnhub fallback — the only quote source verified to work from cloud
+        # IPs; rescues candidates that would otherwise sit blocked/no_price.
+        if not c.current_price or not c.prior_price:
+            try:
+                finnhub_provider = self._get_finnhub_provider()
+                if finnhub_provider is not None:
+                    quote = await _run_with_budget(lambda: finnhub_provider.get_live_quote(c.ticker))
+                    _apply_quote(quote)
+            except Exception as exc:
+                if isinstance(exc, asyncio.TimeoutError):
+                    c.price_status = "pending"
+                logger.debug("NewsMomentum: Finnhub fallback failed for %s: %s", c.ticker, exc)
 
         # Try to get float / market cap / short interest AND fallback price/RVOL
         try:

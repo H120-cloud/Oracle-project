@@ -225,7 +225,10 @@ function DataTable({ columns, rows, csvName }) {
             {sorted.length === 0 ? (
               <tr><td colSpan={columns.length} className="px-3 py-6 text-center text-gray-600">No rows</td></tr>
             ) : sorted.map((r, i) => (
-              <tr key={r.id || r.alert_id || r.candidate_id || i} className="hover:bg-gray-900/60">
+              // Suffix with the index: ids like candidate_id repeat across
+              // re-logged rows (e.g. rocket shadow history), and duplicate
+              // React keys make rows render incorrectly.
+              <tr key={`${r.id || r.alert_id || r.candidate_id || 'row'}-${i}`} className="hover:bg-gray-900/60">
                 {columns.map((c) => (
                   <td key={c.key} className="px-3 py-2 align-top text-gray-200 whitespace-nowrap">
                     {c.render ? c.render(r) : (c.accessor ? c.accessor(r) : r[c.key]) ?? '—'}
@@ -371,6 +374,7 @@ const LATENCY_COLUMNS = [
 ]
 
 const ROCKET_COLUMNS = [
+  { key: 'logged_at', label: 'Logged', render: (r) => fmtTime(r.logged_at) },
   { key: 'ticker', label: 'Ticker', render: (r) => <span className="font-semibold">{r.ticker}</span> },
   { key: 'binary_runner_probability', label: 'Runner %', render: (r) => fmtPct(r.binary_runner_probability) },
   { key: 'binary_major_plus_probability', label: 'Major %', render: (r) => fmtPct(r.binary_major_plus_probability) },

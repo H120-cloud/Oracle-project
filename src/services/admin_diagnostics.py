@@ -350,13 +350,25 @@ def read_rocket_shadow(
         and _in_range(r.get("logged_at"), start, end)
     ]
 
+    # One row per ticker for the leaderboard views: the shadow scorer re-logs
+    # every scan cycle, so the raw JSONL holds many rows per ticker and the
+    # top-10 views would otherwise repeat the same 2-3 hot tickers. Use the
+    # LATEST row per ticker (the current prediction), not a stale high.
+    latest_by_ticker: dict[str, dict] = {}
+    for r in rows:
+        key = str(r.get("ticker") or "")
+        prev = latest_by_ticker.get(key)
+        if prev is None or str(r.get("logged_at") or "") > str(prev.get("logged_at") or ""):
+            latest_by_ticker[key] = r
+    latest = list(latest_by_ticker.values())
+
     # Rank by CatBoost (rocket_rank_score) and by the rule signal.
-    _rank(rows, lambda r: r.get("rocket_rank_score"), "catboost_rank")
-    _rank(rows, lambda r: r.get("rule_score"), "rule_rank")
+    _rank(latest, lambda r: r.get("rocket_rank_score"), "catboost_rank")
+    _rank(latest, lambda r: r.get("rule_score"), "rule_rank")
 
     def _top(metric: str, n: int = 10) -> list[dict]:
         return sorted(
-            rows, key=lambda r: (r.get(metric) is None, -(r.get(metric) or 0))
+            latest, key=lambda r: (r.get(metric) is None, -(r.get(metric) or 0))
         )[:n]
 
     views = {
@@ -364,15 +376,15 @@ def read_rocket_shadow(
         "highest_monster": _top("binary_monster_plus_probability"),
         "highest_major": _top("binary_major_plus_probability"),
         "highest_confidence": sorted(
-            rows,
+            latest,
             key=lambda r: ({"HIGH": 0, "MEDIUM": 1, "LOW": 2}.get(
                 str(r.get("prediction_confidence") or "").upper(), 3),
                 -(r.get("rocket_rank_score") or 0)),
         )[:10],
     }
 
-    # Divergence between CatBoost and rule ordering.
-    divergent = [r for r in rows if r.get("rule_score") is not None]
+    # Divergence between CatBoost and rule ordering (latest row per ticker).
+    divergent = [r for r in latest if r.get("rule_score") is not None]
     catboost_high_rules_low = sorted(
         divergent, key=lambda r: (r["rule_rank"] - r["catboost_rank"]), reverse=True
     )

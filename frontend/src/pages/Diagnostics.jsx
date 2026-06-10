@@ -354,7 +354,12 @@ function DiagnosticsTab({ fetcher, columns, statusOptions, sourceLabel, csvName,
 
 // ── column configs ──────────────────────────────────────────────────────────
 const LATENCY_COLUMNS = [
-  { key: 'published_at', label: 'Time', render: (r) => fmtTime(r.published_at) },
+  { key: 'published_at', label: 'Published', render: (r) => fmtTime(r.published_at) },
+  { key: 'fetched_at', label: 'Seen', render: (r) => fmtTime(r.fetched_at) },
+  { key: 'seen_after', label: 'Saw After',
+    sortAccessor: (r) => r.derived?.source_fetch_latency_seconds,
+    accessor: (r) => r.derived?.source_fetch_latency_seconds,
+    render: (r) => fmtLat(r.derived?.source_fetch_latency_seconds) },
   { key: 'ticker', label: 'Ticker', render: (r) => <span className="font-semibold">{r.ticker}</span> },
   { key: 'headline', label: 'Headline', sortable: false,
     render: (r) => <span className="text-gray-400 max-w-md inline-block truncate" title={r.headline}>{r.headline}</span> },

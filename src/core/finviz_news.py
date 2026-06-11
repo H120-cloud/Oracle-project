@@ -191,6 +191,7 @@ class FinvizNewsScraper:
         # and fire speed-tier alerts on already-played catalysts.
         for table in soup.find_all("table", class_="table-fixed"):
             last_ts: Optional[datetime] = None
+            last_conf: str = "HIGH"
             for row in table.find_all("tr"):
                 cols = row.find_all("td")
                 if len(cols) >= 2:
@@ -204,14 +205,16 @@ class FinvizNewsScraper:
                         raw_tags = [s.get_text(strip=True) for s in spans[:-1]] if len(spans) > 1 else []
                         ticker_tags = [t.lstrip('$') for t in raw_tags if t and 'more' not in t.lower() and len(t.lstrip('$')) <= 5]
                         time_text = cols[0].get_text(strip=True)
-                        parsed = self._parse_time(time_text)
+                        parsed, parsed_conf = self._parse_time_with_confidence(time_text)
                         if parsed is not None:
                             last_ts = parsed
+                            last_conf = parsed_conf
                             ts = parsed
                         else:
                             # Empty cell / unparseable — inherit the most recent
                             # known timestamp above us in the document.
                             ts = last_ts
+                        ts_conf = last_conf if ts is not None else "UNKNOWN"
                         # Filter ticker tags down to the article's actual subject.
                         # Without this, a market-commentary piece tagged with 5
                         # related tickers creates 5 candidates, every one of which
@@ -223,7 +226,7 @@ class FinvizNewsScraper:
                             else self._extract_tickers(headline)
                         )
                         sentiment = self._sentiment(headline)
-                        items.append(FinvizNewsItem(headline=headline, source=source, url=url, timestamp=ts, tickers=tickers, category="news", sentiment=sentiment))
+                        items.append(FinvizNewsItem(headline=headline, source=source, url=url, timestamp=ts, timestamp_confidence=ts_conf, tickers=tickers, category="news", sentiment=sentiment))
         return _sort_by_ts_desc(items)[:50]
 
     async def _fetch_blogs(self) -> List[FinvizNewsItem]:
@@ -237,6 +240,7 @@ class FinvizNewsScraper:
         # across unrelated content blocks (see _fetch_news rationale).
         for table in soup.find_all("table", class_="table-fixed"):
             last_ts: Optional[datetime] = None
+            last_conf: str = "HIGH"
             for row in table.find_all("tr"):
                 cols = row.find_all("td")
                 if len(cols) >= 3:
@@ -247,12 +251,16 @@ class FinvizNewsScraper:
                     date_text = cols[0].get_text(strip=True)
                     time_text = cols[1].get_text(strip=True)
                     combined = f"{date_text} {time_text}".strip()
-                    parsed = self._parse_time(combined) or self._parse_time(time_text)
+                    parsed, parsed_conf = self._parse_time_with_confidence(combined)
+                    if parsed is None:
+                        parsed, parsed_conf = self._parse_time_with_confidence(time_text)
                     if parsed is not None:
                         last_ts = parsed
+                        last_conf = parsed_conf
                         ts = parsed
                     else:
                         ts = last_ts
+                    ts_conf = (last_conf if ts is not None else "UNKNOWN")
 
                     # New "market-pulse" layout (Finviz 2026+): the real headline
                     # is in a dedicated span; the anchors are ticker/performance
@@ -278,6 +286,7 @@ class FinvizNewsScraper:
                         url = urljoin("https://finviz.com", href0) if href0.startswith("/") else (href0 or self.BLOG_URL)
                         items.append(FinvizNewsItem(
                             headline=headline, source="Finviz", url=url, timestamp=ts,
+                            timestamp_confidence=ts_conf,
                             tickers=tickers, category="blog", sentiment=self._sentiment(headline),
                         ))
                         continue
@@ -309,8 +318,25 @@ class FinvizNewsScraper:
                         )
                         cat = "press_release" if "Newswire" in source or "PR " in source else "blog"
                         sentiment = self._sentiment(headline)
-                        items.append(FinvizNewsItem(headline=headline, source=source, url=url, timestamp=ts, tickers=tickers, category=cat, sentiment=sentiment))
+                        items.append(FinvizNewsItem(headline=headline, source=source, url=url, timestamp=ts, timestamp_confidence=ts_conf, tickers=tickers, category=cat, sentiment=sentiment))
         return _sort_by_ts_desc(items)[:50]
+
+    def _parse_time_with_confidence(self, text: str) -> tuple[Optional[datetime], str]:
+        """Parse a Finviz timestamp and grade its precision.
+
+        Finviz shows coarse relative times for older items ('4 hours ago' is
+        ±30min data) and date-only stamps for old ones. Stamping those with
+        HIGH confidence let hour-granular timestamps masquerade as
+        second-precise, which poisons latency metrics and freshness scoring.
+        HIGH = minute precision or better ('12 min', any 'HH:MM' form);
+        LOW  = hour/day/week-granular relative or date-only.
+        """
+        parsed = self._parse_time(text)
+        if parsed is None:
+            return None, "UNKNOWN"
+        t = (text or "").strip().upper()
+        is_minute_precise = ":" in t or re.match(r"^\s*\d+\s*(SEC|SECOND|MIN|MINUTE)S?\b", t)
+        return parsed, ("HIGH" if is_minute_precise else "LOW")
 
     def _parse_time(self, text: str) -> Optional[datetime]:
         """Parse Finviz global-feed timestamp string.

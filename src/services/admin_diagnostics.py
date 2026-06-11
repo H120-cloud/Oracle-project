@@ -398,12 +398,64 @@ def read_rocket_shadow(
                                     if r["catboost_rank"] - r["rule_rank"] > 0][:10],
     }
 
+    # Live scoreboard: how the model's probabilities held up against realized
+    # forward returns (rows stamped by resolve_shadow_outcomes).
+    resolved = [
+        r for r in rows
+        if r.get("outcome_resolved") and r.get("outcome_status", "resolved") == "resolved"
+    ]
+
+    def _perf(prob_field: str, flag_field: str) -> dict:
+        scored = [
+            r for r in resolved
+            if r.get(prob_field) is not None and r.get(flag_field) is not None
+        ]
+        if len(scored) < 10:
+            return {"rows": len(scored)}
+        scored.sort(key=lambda r: r[prob_field], reverse=True)
+        top = scored[: max(1, len(scored) // 10)]
+        base = sum(1 for r in scored if r[flag_field]) / len(scored)
+        hit = sum(1 for r in top if r[flag_field]) / len(top)
+        return {
+            "rows": len(scored),
+            "baseline_rate": round(base, 4),
+            "top_decile_hit_rate": round(hit, 4),
+            "lift": round(hit / base, 2) if base > 0 else None,
+        }
+
+    def _avg(values: list) -> Optional[float]:
+        nums = [v for v in values if isinstance(v, (int, float))]
+        return round(sum(nums) / len(nums), 2) if nums else None
+
+    high_conf = sum(1 for r in rows if str(r.get("prediction_confidence") or "").upper() == "HIGH")
+    enrich_rows = [r for r in rows if "enriched" in r]
+    try:
+        from src.core.agentic.rocket_feature_enrichment import get_profile_enricher
+        enrichment_stats = get_profile_enricher().stats()
+    except Exception:
+        enrichment_stats = None
+
     summary = {
         "total": len(rows),
-        "high_confidence": sum(1 for r in rows if str(r.get("prediction_confidence") or "").upper() == "HIGH"),
+        "high_confidence": high_conf,
+        "quality": {
+            "avg_feature_null_count": _avg([r.get("feature_null_count") for r in rows]),
+            "avg_feature_null_count_before": _avg([r.get("feature_null_count_before") for r in enrich_rows]),
+            "high_confidence_pct": round(high_conf / len(rows), 4) if rows else None,
+            "enrichment_coverage": round(
+                sum(1 for r in enrich_rows if r.get("enriched")) / len(enrich_rows), 4
+            ) if enrich_rows else None,
+            "enrichment_stats": enrichment_stats,
+        },
         "avg_rank_score": round(
             sum(r.get("rocket_rank_score") or 0 for r in rows) / len(rows), 4
         ) if rows else None,
+        "performance": {
+            "resolved": len(resolved),
+            "runner": _perf("binary_runner_probability", "realized_runner"),
+            "major": _perf("binary_major_plus_probability", "realized_major"),
+            "monster": _perf("binary_monster_plus_probability", "realized_monster"),
+        },
     }
 
     selected = views.get(view) if view else None

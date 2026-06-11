@@ -61,7 +61,9 @@ def test_prepare_features_uses_feature_columns_only():
     assert list(features.columns) == FEATURE_COLUMNS
     assert not set(LABEL_COLUMNS) & set(features.columns)
     assert "ticker" in categorical_columns
-    assert pd.api.types.is_integer_dtype(features["alert_time"])
+    # weekly_v2 encoding: dow*24 + hour (2026-01-01 is a Thursday, 12:00 → 84)
+    assert pd.api.types.is_float_dtype(features["alert_time"])
+    assert float(features["alert_time"].iloc[0]) == 84.0
 
 
 def test_metric_block_reports_top_decile_lift():

@@ -2,13 +2,51 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
+logger = logging.getLogger(__name__)
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ── Source-latency warning (published_at → detected_at) ─────────────────────
+
+SOURCE_LATENCY_WARN_SECONDS = 120.0
+_LATENCY_WARN_THROTTLE_SECONDS = 300.0
+_last_latency_warning: Dict[str, datetime] = {}
+
+
+def _reset_latency_warn_throttle() -> None:
+    _last_latency_warning.clear()
+
+
+def maybe_warn_source_latency(
+    source: str, latency_seconds: float, *, now: Optional[datetime] = None
+) -> bool:
+    """Warn when a source delivered a headline long after it was published.
+
+    Surfaces source-side feed lag (the dominant cause of late alerts) in the
+    logs where the operator will see it. Throttled per source so a backlog of
+    stale-but-in-window items can't spam the log. Returns True when a warning
+    was emitted.
+    """
+    if latency_seconds is None or latency_seconds <= SOURCE_LATENCY_WARN_SECONDS:
+        return False
+    now = now or _now()
+    last = _last_latency_warning.get(source)
+    if last is not None and (now - last).total_seconds() < _LATENCY_WARN_THROTTLE_SECONDS:
+        return False
+    _last_latency_warning[source] = now
+    logger.warning(
+        "SOURCE LATENCY WARNING: %s detected headline %.0fm after published.",
+        source, latency_seconds / 60.0,
+    )
+    return True
 
 
 @dataclass

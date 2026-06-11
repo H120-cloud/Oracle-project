@@ -917,6 +917,12 @@ async def _watchlist_broadcast_loop():
 
 NEWS_MOMENTUM_SCAN_INTERVAL = 45  # seconds between scans
 
+# Wires that publish fast — fetched AND scanned BEFORE Finviz each cycle so a
+# fresh high-impact headline reaches the FAST WATCH path within seconds of its
+# fetch, instead of waiting on the slowest source (Finviz fetches can take up
+# to the full per-source timeout). Finviz remains secondary confirmation.
+FAST_NEWS_SOURCES = ("StockTitan", "PRNewswire", "WireNews", "Investing", "Sharecast")
+
 # News Momentum Orchestrator (initialized in lifespan)
 _news_momentum_orch: Optional[NewsMomentumOrchestrator] = None
 # Serializes orchestrator.scan() between the periodic RSS loop and the
@@ -1113,6 +1119,7 @@ async def _news_momentum_scan_loop():
     _stale_news_count = 0
     _untickered_news_count = 0
     from src.core.agentic.source_health_registry import source_health_tracker as _source_health
+    from src.core.agentic.source_health import maybe_warn_source_latency
 
     while True:
         _iter_count += 1
@@ -1162,39 +1169,39 @@ async def _news_momentum_scan_loop():
                     except Exception as exc:
                         return source_name, None, [], exc
 
-                source_results = await asyncio.gather(
-                    _fetch_source("Finviz", lambda: _finviz_scraper.fetch_all(force_refresh=True)),
-                    _fetch_source("StockTitan", _stocktitan_scraper.fetch_all),
-                    _fetch_source("PRNewswire", _prnewswire_scraper.fetch_all),
-                    _fetch_source("Sharecast", _sharecast_scraper.fetch_all),
-                    _fetch_source("WireNews", _wire_scraper.fetch_all),
-                    _fetch_source("Investing", _investing_scraper.fetch_all),
-                )
+                fetch_specs = {
+                    "StockTitan": _stocktitan_scraper.fetch_all,
+                    "PRNewswire": _prnewswire_scraper.fetch_all,
+                    "Sharecast": _sharecast_scraper.fetch_all,
+                    "WireNews": _wire_scraper.fetch_all,
+                    "Investing": _investing_scraper.fetch_all,
+                    "Finviz": lambda: _finviz_scraper.fetch_all(force_refresh=True),
+                }
 
-                for source_name, summary, items, exc in source_results:
-                    if exc is not None:
-                        _source_health.record_parse_error(source_name, now=datetime.now(timezone.utc))
-                        logger.warning("NewsMomentum: %s fetch error: %s", source_name, exc)
-                        continue
+                def _collect_items(source_results) -> List[Any]:
+                    collected: List[Any] = []
+                    for source_name, summary, items, exc in source_results:
+                        if exc is not None:
+                            _source_health.record_parse_error(source_name, now=datetime.now(timezone.utc))
+                            logger.warning("NewsMomentum: %s fetch error: %s", source_name, exc)
+                            continue
 
-                    if source_name == "WireNews":
-                        by_source: dict[str, int] = {}
-                        for item in items:
-                            item_source = getattr(item, "source", "WireNews") or "WireNews"
-                            by_source[item_source] = by_source.get(item_source, 0) + 1
-                        if not by_source:
-                            _source_health.record_fetch("WireNews", 0, now=datetime.now(timezone.utc))
-                        for source, count in by_source.items():
-                            _source_health.record_fetch(source, count, now=datetime.now(timezone.utc))
-                    else:
-                        _source_health.record_fetch(source_name, len(items), now=datetime.now(timezone.utc))
-                    for failed_source, count in getattr(summary, "failed_sources", {}).items():
-                        for _ in range(int(count or 0)):
-                            _source_health.record_parse_error(failed_source, now=datetime.now(timezone.utc))
-                    all_items.extend(items)
-
-                # Deduplicate across sources before emitting events
-                all_items = deduplicate_news_items(all_items)
+                        if source_name == "WireNews":
+                            by_source: dict[str, int] = {}
+                            for item in items:
+                                item_source = getattr(item, "source", "WireNews") or "WireNews"
+                                by_source[item_source] = by_source.get(item_source, 0) + 1
+                            if not by_source:
+                                _source_health.record_fetch("WireNews", 0, now=datetime.now(timezone.utc))
+                            for source, count in by_source.items():
+                                _source_health.record_fetch(source, count, now=datetime.now(timezone.utc))
+                        else:
+                            _source_health.record_fetch(source_name, len(items), now=datetime.now(timezone.utc))
+                        for failed_source, count in getattr(summary, "failed_sources", {}).items():
+                            for _ in range(int(count or 0)):
+                                _source_health.record_parse_error(failed_source, now=datetime.now(timezone.utc))
+                        collected.extend(items)
+                    return collected
 
                 # News-freshness cutoff: feeds carry 24-48h of items, so a stale
                 # story lingering in the feed would otherwise be re-detected as
@@ -1213,7 +1220,17 @@ async def _news_momentum_scan_loop():
                     except Exception:
                         return False
 
-                for item in all_items:
+                _seen_headline_keys: set[str] = set()
+
+                def _events_from_items(items: List[Any]) -> List[Any]:
+                  nonlocal _untickered_news_count, _missing_ts_count, _stale_news_count
+                  phase_events: List[Any] = []
+                  for item in deduplicate_news_items(items):
+                    _hkey = _normalize_headline(getattr(item, "headline", "") or "")
+                    if _hkey and _hkey in _seen_headline_keys:
+                        continue  # already emitted by an earlier (faster) phase
+                    if _hkey:
+                        _seen_headline_keys.add(_hkey)
                     if not getattr(item, "tickers", None):
                         _untickered_news_count += 1
                         _source_health.record_untickered_headline(getattr(item, "source", "unknown") or "unknown")
@@ -1238,6 +1255,17 @@ async def _news_momentum_scan_loop():
                         item.timestamp,
                         detected_at=_now_utc,
                     )
+                    # Operator-visible warning when the feed delivered this
+                    # headline long after the wire published it (source-side lag).
+                    try:
+                        _ts = item.timestamp if item.timestamp.tzinfo else item.timestamp.replace(tzinfo=timezone.utc)
+                        maybe_warn_source_latency(
+                            getattr(item, "source", "unknown") or "unknown",
+                            (_now_utc - _ts.astimezone(timezone.utc)).total_seconds(),
+                            now=_now_utc,
+                        )
+                    except Exception:
+                        pass
                     raw_text = _news_item_classification_text(item)
                     classified_at = datetime.now(timezone.utc)
                     cat, sub, neg, vague = classify_headline(raw_text or item.headline)
@@ -1261,7 +1289,7 @@ async def _news_momentum_scan_loop():
                     else:
                         source_enum = NewsSource.FINVIZ
                     for ticker in item.tickers:
-                        news_events.append(NewsEvent(
+                        phase_events.append(NewsEvent(
                             ticker=ticker,
                             headline=item.headline,
                             source=source_enum,
@@ -1277,15 +1305,39 @@ async def _news_momentum_scan_loop():
                             is_vague=vague,
                             raw_text=raw_text,
                         ))
+                  news_events.extend(phase_events)
+                  return phase_events
 
-                if news_events:
+                async def _run_scan(events: List[Any], label: str) -> None:
+                    if not events:
+                        return
                     async with _get_news_scan_lock():
-                        result = await _news_momentum_orch.scan(news_events)
+                        result = await _news_momentum_orch.scan(events)
                     if result.candidates or result.telegram_alerts_sent > 0:
                         logger.info(
-                            "NewsMomentum: global scan found %d candidates, sent %d Telegram alerts",
-                            len(result.candidates), result.telegram_alerts_sent,
+                            "NewsMomentum: %s scan found %d candidates, sent %d Telegram alerts",
+                            label, len(result.candidates), result.telegram_alerts_sent,
                         )
+
+                # ── Phase 1: FAST sources — fetched and scanned immediately so a
+                # high-impact headline hits FAST WATCH within seconds, never
+                # waiting on Finviz or ticker-page enrichment.
+                fast_results = await asyncio.gather(*(
+                    _fetch_source(name, fetch_specs[name])
+                    for name in FAST_NEWS_SOURCES if name in fetch_specs
+                ))
+                fast_items = _collect_items(fast_results)
+                all_items.extend(fast_items)
+                await _run_scan(_events_from_items(fast_items), "fast-source")
+
+                # ── Phase 2: Finviz (secondary confirmation) ──
+                slow_results = await asyncio.gather(*(
+                    _fetch_source(name, fetch)
+                    for name, fetch in fetch_specs.items() if name not in FAST_NEWS_SOURCES
+                ))
+                slow_items = _collect_items(slow_results)
+                all_items.extend(slow_items)
+                await _run_scan(_events_from_items(slow_items), "global")
 
                 ticker_news_events = []
 
@@ -1523,6 +1575,13 @@ async def _news_momentum_outcome_resolver_loop():
                 summary = await resolver.run_once()
                 if summary.get("resolved", 0) > 0 or summary.get("updated", 0) > 0:
                     logger.info("OutcomeResolver: %s", summary)
+            # Rocket shadow scoreboard: stamp matured shadow predictions with
+            # realized forward returns (telemetry only, never gates alerts).
+            try:
+                from src.core.agentic.rocket_model_shadow import resolve_shadow_outcomes
+                await asyncio.to_thread(resolve_shadow_outcomes)
+            except Exception as exc:
+                logger.debug("RocketShadow outcome resolution skipped: %s", exc)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

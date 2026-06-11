@@ -463,6 +463,23 @@ function RocketShadowTab() {
     <DiagnosticsTab
       fetcher={getRocketShadow} columns={ROCKET_COLUMNS} csvName="rocket_shadow.csv" downloadKind="rocket-shadow"
       statusOptions={['HIGH', 'MEDIUM', 'LOW']} sourceLabel="Pipeline"
+      renderCards={(d) => {
+        const p = d.summary?.performance
+        const q = d.summary?.quality
+        if (!p && !q) return null
+        return (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard label="Resolved Outcomes" value={p?.resolved ?? 0} tone="blue" />
+            <StatCard label="Major Base Rate" value={fmtPct(p?.major?.baseline_rate)} />
+            <StatCard label="Major Top-Decile Hit" value={fmtPct(p?.major?.top_decile_hit_rate)} tone="green" />
+            <StatCard label="Live Lift" value={p?.major?.lift != null ? `${p.major.lift}×` : '—'} tone="green" />
+            <StatCard label="Avg Missing Features" value={q?.avg_feature_null_count ?? '—'} tone="yellow" />
+            <StatCard label="HIGH Confidence" value={fmtPct(q?.high_confidence_pct)} tone="green" />
+            <StatCard label="Enrichment Coverage" value={fmtPct(q?.enrichment_coverage)} tone="blue" />
+            <StatCard label="Profile Cache Hits" value={q?.enrichment_stats?.cache_hits ?? '—'} />
+          </div>
+        )
+      }}
       renderTop={(d) => (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <TopList title="Top 10 Monster Candidates" rows={d.views?.highest_monster} metric="binary_monster_plus_probability" fmt={fmtPct} />

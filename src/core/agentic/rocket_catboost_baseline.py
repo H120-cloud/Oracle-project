@@ -106,14 +106,25 @@ def time_based_split(df: pd.DataFrame, *, test_fraction: float = 0.20) -> SplitF
     return SplitFrames(train=train, test=test, split_time=split_time)
 
 
-def prepare_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str], List[int]]:
+# Versioned alert_time encoding. weekly_v2 = dow*24 + hour (0..167, -1 missing):
+# removes the absolute-time monotonicity a tree could exploit to memorize
+# calendar regimes, and gives missing timestamps a clean sentinel instead of
+# int64-min garbage. The live scorer mirrors this via the artifact flag.
+ALERT_TIME_ENCODING = "weekly_v2"
+
+
+def prepare_features(
+    df: pd.DataFrame,
+    *,
+    feature_columns: Optional[List[str]] = None,
+) -> Tuple[pd.DataFrame, List[str], List[int]]:
     """Return FEATURE_COLUMNS-only CatBoost input and categorical indices."""
-    features = df.loc[:, FEATURE_COLUMNS].copy()
+    columns = list(feature_columns or FEATURE_COLUMNS)
+    features = df.loc[:, columns].copy()
     for column in features.columns:
-        if pd.api.types.is_datetime64_any_dtype(features[column]):
-            features[column] = pd.to_datetime(features[column], utc=True, errors="coerce").astype("int64")
-        elif column == "alert_time":
-            features[column] = pd.to_datetime(features[column], utc=True, errors="coerce").astype("int64")
+        if column == "alert_time" or pd.api.types.is_datetime64_any_dtype(features[column]):
+            dt = pd.to_datetime(features[column], utc=True, errors="coerce")
+            features[column] = (dt.dt.dayofweek * 24 + dt.dt.hour).fillna(-1.0).astype(float)
         elif pd.api.types.is_bool_dtype(features[column]):
             features[column] = features[column].astype("float")
 
@@ -230,17 +241,27 @@ def train_baseline(
     report_path: Path | str = DEFAULT_REPORT_PATH,
     iterations: int = 350,
     random_seed: int = 42,
+    exclude_features: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-    """Train all requested offline CatBoost targets and write report/artifact."""
+    """Train all requested offline CatBoost targets and write report/artifact.
+
+    ``exclude_features`` drops named FEATURE_COLUMNS before training (e.g. the
+    previous artifact's ``zero_importance_features``) — the live scorer follows
+    the artifact's ``feature_columns`` automatically.
+    """
     from catboost import CatBoostClassifier, Pool
+    from sklearn.isotonic import IsotonicRegression
 
     input_path = Path(input_path)
     model_path = Path(model_path)
     report_path = Path(report_path)
     exact = load_exact_training_rows(input_path)
     split = time_based_split(exact)
-    X_train, categorical_columns, cat_indices = prepare_features(split.train)
-    X_test, _, _ = prepare_features(split.test)
+    excluded = set(exclude_features or [])
+    effective_columns = [c for c in FEATURE_COLUMNS if c not in excluded]
+    X_train, categorical_columns, cat_indices = prepare_features(
+        split.train, feature_columns=effective_columns)
+    X_test, _, _ = prepare_features(split.test, feature_columns=effective_columns)
     y_train_all = build_targets(split.train["training_runner_tier"])
     y_test_all = build_targets(split.test["training_runner_tier"])
 
@@ -249,6 +270,10 @@ def train_baseline(
     metrics: Dict[str, Any] = {}
     importances: Dict[str, List[Dict[str, Any]]] = {}
     calibrations: Dict[str, List[Dict[str, Any]]] = {}
+    calibrators: Dict[str, Any] = {}
+    # Features with exactly-zero importance in EVERY target — candidates for
+    # exclude_features on the next retrain (recorded, not auto-dropped).
+    zero_importance: Optional[set] = None
 
     for target_name in TARGET_DEFINITIONS:
         y_train = y_train_all[target_name]
@@ -271,7 +296,21 @@ def train_baseline(
         probabilities = model.predict_proba(test_pool)[:, 1]
         metrics[target_name] = metric_block(y_test, probabilities)
         calibrations[target_name] = calibration_by_bucket(y_test, probabilities)
+        # Isotonic calibration on the time-ordered holdout so live probabilities
+        # are interpretable (raw CatBoost scores on imbalanced data are not).
+        try:
+            if len(np.unique(np.asarray(y_test, dtype=int))) > 1:
+                iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+                iso.fit(np.asarray(probabilities, dtype=float), np.asarray(y_test, dtype=int))
+                calibrators[target_name] = iso
+        except Exception:
+            pass
         feature_scores = model.get_feature_importance(train_pool)
+        target_zero = {
+            feature for feature, score in zip(X_train.columns, feature_scores)
+            if float(score) == 0.0
+        }
+        zero_importance = target_zero if zero_importance is None else (zero_importance & target_zero)
         importances[target_name] = [
             {"feature": feature, "importance": float(score)}
             for feature, score in sorted(zip(X_train.columns, feature_scores), key=lambda item: item[1], reverse=True)[:20]
@@ -283,7 +322,11 @@ def train_baseline(
         "artifact_type": "rocket_catboost_baseline_shadow",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "input_path": str(input_path),
-        "feature_columns": list(FEATURE_COLUMNS),
+        "feature_columns": effective_columns,
+        "excluded_features": sorted(excluded),
+        "zero_importance_features": sorted(zero_importance or ()),
+        "alert_time_encoding": ALERT_TIME_ENCODING,
+        "calibrators": calibrators,
         "categorical_columns": categorical_columns,
         "target_definitions": {name: sorted(labels) for name, labels in TARGET_DEFINITIONS.items()},
         "label_policy": "exact labels only; UNKNOWN and PROVISIONAL_* excluded",

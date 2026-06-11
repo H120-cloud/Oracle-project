@@ -36,20 +36,16 @@ HEADERS = {
     "Accept": "application/rss+xml,application/xml,text/xml,text/html;q=0.9,*/*;q=0.8",
 }
 
+# Verified live 2026-06-10. Removed dead defaults (each still re-addable via
+# the <SOURCE>_FEED_URLS env override):
+#   - rss.globenewswire.com/GlobeNewswire        → 404
+#   - businesswire.com/.../rss/                  → 403 (bot-blocked)
+#   - accessnewswire.com/newsroom                → JS-rendered, 0 parseable
+#   - newsfilecorp.com/news/ + /rss/news.xml     → 0 parseable / 404
+# Dead URLs cost ~6s of fetch time per scan cycle for zero items.
 DEFAULT_WIRE_FEEDS = {
     "GlobeNewswire": [
-        "https://rss.globenewswire.com/GlobeNewswire",
         "https://www.globenewswire.com/RssFeed/orgclass/1/feedTitle/GlobeNewswire%20-%20News%20about%20Public%20Companies",
-    ],
-    "BusinessWire": [
-        "https://www.businesswire.com/portal/site/home/news/rss/",
-    ],
-    "Accesswire": [
-        "https://www.accessnewswire.com/newsroom",
-    ],
-    "Newsfile": [
-        "https://www.newsfilecorp.com/news/",
-        "https://www.newsfilecorp.com/rss/news.xml",
     ],
 }
 
@@ -117,6 +113,30 @@ def _quick_sentiment(text: str) -> str:
     return "neutral"
 
 
+_STOCK_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,5}$")
+
+
+def _item_stock_tickers(item) -> list[str]:
+    """Tickers from wire RSS <category domain="...rss/stock"> tags.
+
+    GlobeNewswire (and compatible wires) tag each release with its exchange
+    listing, e.g. <category domain=".../rss/stock">Nasdaq:GENK</category>.
+    This is the most reliable attribution available — exchange-confirmed by
+    the wire itself — and the ticker usually does NOT appear in the headline
+    text, so text extraction alone drops these items entirely.
+    """
+    tickers: list[str] = []
+    for cat in item.find_all("category"):
+        domain = str(cat.get("domain") or "")
+        if "stock" not in domain.lower():
+            continue
+        raw = cat.get_text(" ", strip=True)
+        symbol = raw.split(":")[-1].strip().upper()
+        if _STOCK_SYMBOL_RE.fullmatch(symbol) and symbol not in tickers:
+            tickers.append(symbol)
+    return tickers
+
+
 def _item_text(item) -> str:
     parts: list[str] = []
     for tag in ("title", "description", "summary", "content:encoded"):
@@ -133,7 +153,10 @@ def _item_timestamp(item) -> Optional[datetime]:
 
 def _item_timestamp_with_confidence(item) -> tuple[Optional[datetime], str]:
     for tag in _DATE_ATTRS:
-        found = item.find(tag)
+        # The lxml/xml parser is case-sensitive: <pubDate> never matches
+        # "pubdate", which left every RSS item timestamp-less (and the scan
+        # loop drops missing-timestamp items). Match tag names case-insensitively.
+        found = item.find(re.compile(rf"^{re.escape(tag)}$", re.IGNORECASE))
         if found:
             parsed, confidence = _parse_timestamp_with_confidence(found.get_text(" ", strip=True))
             if parsed:
@@ -169,11 +192,15 @@ def parse_wire_feed_html(
 
     items: list[FinvizNewsItem] = []
     for node in nodes:
-        text = _item_text(node) if node.name in {"item", "entry"} else " ".join(node.get_text(" ", strip=True).split())
+        is_feed_node = node.name in {"item", "entry"}
+        text = _item_text(node) if is_feed_node else " ".join(node.get_text(" ", strip=True).split())
         if not text:
             continue
         item_url = _item_url(node, base_url)
-        tickers = extract_tickers(text, url=item_url, include_plain_parens=True)
+        # Exchange-confirmed ticker tags first; text extraction as fallback.
+        tickers = (_item_stock_tickers(node) if is_feed_node else []) or extract_tickers(
+            text, url=item_url, include_plain_parens=True
+        )
         if not tickers:
             continue
         if node.name in {"item", "entry"}:
@@ -182,9 +209,13 @@ def parse_wire_feed_html(
                 timestamp, timestamp_confidence = _parse_timestamp_with_confidence(text)
         else:
             timestamp, timestamp_confidence = _parse_timestamp_with_confidence(text)
+        # Headline = the title tag when present (text concatenates
+        # title+description, which usually duplicates the headline).
+        title_tag = node.find("title") if is_feed_node else None
+        headline = (title_tag.get_text(" ", strip=True) if title_tag else "") or text[:400]
         items.append(
             FinvizNewsItem(
-                headline=text[:400],
+                headline=headline[:400],
                 source=source,
                 url=item_url,
                 timestamp=timestamp,
